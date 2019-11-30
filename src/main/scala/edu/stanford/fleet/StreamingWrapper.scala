@@ -280,6 +280,5 @@ object StreamingWrapper {
 }
 
 object StreamingWrapperDriver extends App {
-  chisel3.Driver.execute(args, () => new StreamingWrapper(0,1000000000, 90,
-    (coreId: Int) => new Summer(coreId)))
+  chisel3.Driver.execute(args, () => new StreamingWrapper(0,1000000000, 90, (coreId: Int) => new Summer))
 }

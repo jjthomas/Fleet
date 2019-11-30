@@ -29,3 +29,5 @@ logBuffered in Test := false
 // Disable parallel execution when running tests.
 //  Running tests in parallel on Jenkins currently fails.
 parallelExecution in Test := false
+
+scalacOptions ++= Seq("-Xsource:2.11")

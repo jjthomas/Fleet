@@ -5,45 +5,45 @@ import scala.collection.mutable.ArrayBuffer
 
 object Tests {
   val tests = Map(
-    "StreamingWrapper1" -> { (backendName: String) =>
+    "Summer1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,
-        (coreId: Int) => new Summer(coreId)), backendName) {
+        (coreId: Int) => new Summer), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(0, 2, 10, 10), 32),
             Util.arrToBits(Array(20), 32))
         }
       }
     },
-    "StreamingWrapper2" -> { (backendName: String) =>
+    "Summer2" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 2,
-        (coreId: Int) => new Summer(coreId)), backendName) {
+        (coreId: Int) => new Summer), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(1, 10, 1, 20, 1, 10), 32),
             Util.arrToBits(Array(20, 30), 32))
         }
       }
     },
-    "StreamingWrapper3" -> { (backendName: String) =>
+    "Counter1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,
-        (coreId: Int) => new Counter(coreId, 1)), backendName) {
+        (coreId: Int) => new Counter(1)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0), 8),
             Util.arrToBits(Array(2), 8))
         }
       }
     },
-    "StreamingWrapper4" -> { (backendName: String) =>
+    "Counter2" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 2,
-        (coreId: Int) => new Counter(coreId, 2)), backendName) {
+        (coreId: Int) => new Counter(2)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 2, 3, 2, 0, 0, 0, 0, 1), 8),
             Util.arrToBits(Array(1, 2, 3, 4), 8))
         }
       }
     },
-    "StreamingWrapper5" -> { (backendName: String) =>
+    "Counter3" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 3,
-        (coreId: Int) => new Counter(coreId, 30)), backendName) {
+        (coreId: Int) => new Counter(30)), backendName) {
         (c) => {
           val input = Array(6, 0, 0, 0, 0, 0, 1, 1, 2, 2)
           val config = new ArrayBuffer[Int]
@@ -76,9 +76,9 @@ object Tests {
     } else {
       ""
     }
-    val backendName = envOrElse("TESTER_BACKENDS", defaultBackend).split(" ").head
+    val backendName = defaultBackend.split(" ").head
     val testsToRun = if (args.isEmpty || args.head == "all") {
-      tests.keys.toArray
+      tests.keys.toSeq.sorted.toArray
     }
     else {
       args
@@ -86,7 +86,7 @@ object Tests {
 
     var successful = 0
     val errors = new ArrayBuffer[String]
-    for (testName <- problemsToRun) {
+    for (testName <- testsToRun) {
       tests.get(testName) match {
         case Some(test) =>
           println(s"Starting test $testName")

@@ -2,7 +2,7 @@ package edu.stanford.fleet
 
 import chisel3._
 
-class Summer(coreId: Int) extends ProcessingUnit(32, 32, coreId) {
+class Summer extends ProcessingUnit(32, 32) {
   val sum = RegInit(0.asUInt(32.W))
   val outputAcked = RegInit(false.B)
 

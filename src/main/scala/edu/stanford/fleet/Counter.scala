@@ -2,7 +2,7 @@ package edu.stanford.fleet
 
 import chisel3._
 
-class Counter(coreId: Int, numEntries: Int) extends ProcessingUnit(8, 8, coreId) {
+class Counter(numEntries: Int) extends ProcessingUnit(8, 8) {
   val bram = Module(new DualPortBRAM(8, Math.max(1, util.log2Ceil(numEntries))))
   val configCounter = RegInit(0.asUInt(Math.max(1, util.log2Ceil(numEntries)).W))
   val configDone = RegInit(false.B)

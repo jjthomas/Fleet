@@ -2,7 +2,6 @@ package edu.stanford.fleet
 
 import chisel3._
 import chisel3.core.Bundle
-import language.Builder
 
 class ProcessingUnitIO(inputWordSize: Int, outputWordSize: Int) extends Bundle {
   val inputWord = Input(UInt(inputWordSize.W))
@@ -15,7 +14,6 @@ class ProcessingUnitIO(inputWordSize: Int, outputWordSize: Int) extends Bundle {
 
   override def cloneType(): this.type = new ProcessingUnitIO(inputWordSize, outputWordSize).asInstanceOf[this.type]
 }
-abstract class ProcessingUnit(val inputWordSize: Int, val outputWordSize: Int, coreId: Int) extends Module {
+abstract class ProcessingUnit(val inputWordSize: Int, val outputWordSize: Int) extends Module {
   val io = IO(new ProcessingUnitIO(inputWordSize, outputWordSize))
-  // Builder.nextBuilder(inputWordSize, outputWordSize, io, coreId)
 }
