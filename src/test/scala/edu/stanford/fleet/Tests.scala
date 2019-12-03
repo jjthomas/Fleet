@@ -4,6 +4,10 @@ import chisel3.iotesters.Driver
 import scala.collection.mutable.ArrayBuffer
 
 object Tests {
+  // If there are n PUs, input format is:
+  // [32-bit length in input words of PU 0 config, PU 0 config, ..., PU n-1 config, 32-bit length in input words of stream, stream]
+  // Output format is:
+  // [PU 0 output, ..., PU n-1 output]
   val tests = Map(
     "Summer1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,

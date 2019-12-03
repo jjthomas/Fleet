@@ -2,6 +2,7 @@ package edu.stanford.fleet
 
 import chisel3._
 
+// Maintains 32-bit sum of input elements and emits it at end. Configuration data is the initial value of the sum.
 class Summer extends ProcessingUnit(32, 32) {
   val sum = RegInit(0.asUInt(32.W))
   val outputAcked = RegInit(false.B)

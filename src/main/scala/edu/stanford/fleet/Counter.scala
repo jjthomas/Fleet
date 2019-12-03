@@ -2,6 +2,9 @@ package edu.stanford.fleet
 
 import chisel3._
 
+// Maintains 8-bit occurence count of each possible input word (possible inputs are [0, numEntries-1], where numEntries <= 256).
+// Emits occurrence count for each input (in ascending order of inputs) at end. Configuration data is initial occurrence
+// count for each input.
 class Counter(numEntries: Int) extends ProcessingUnit(8, 8) {
   val bram = Module(new DualPortBRAM(8, Math.max(1, util.log2Ceil(numEntries))))
   val configCounter = RegInit(0.asUInt(Math.max(1, util.log2Ceil(numEntries)).W))
