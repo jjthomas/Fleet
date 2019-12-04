@@ -20,8 +20,6 @@ class Counter(numEntries: Int) extends ProcessingUnit(8, 8) {
   val outputDone = RegInit(false.B)
 
   bram.io.a_addr := 0.U
-  bram.io.a_din := 0.U
-  bram.io.a_wr := false.B
   bram.io.b_addr := 0.U
   bram.io.b_din := 0.U
   bram.io.b_wr := false.B
