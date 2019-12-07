@@ -11,16 +11,16 @@ object Tests {
   val tests = Map(
     "Summer1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,
-        (coreId: Int) => new Summer), backendName) {
+        (coreId: Int) => new Summer(8)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(0, 2, 10, 10), 32),
-            Util.arrToBits(Array(20), 32))
+            Util.arrToBits(Array(20, 0, 0, 0), 8))
         }
       }
     },
     "Summer2" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 2,
-        (coreId: Int) => new Summer), backendName) {
+        (coreId: Int) => new Summer(32)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(1, 10, 1, 20, 1, 10), 32),
             Util.arrToBits(Array(20, 30), 32))
