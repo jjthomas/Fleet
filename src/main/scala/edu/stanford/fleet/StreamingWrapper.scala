@@ -2,6 +2,7 @@ package edu.stanford.fleet
 
 import chisel3._
 import chisel3.core.{ActualDirection, Bundle, DataMirror, Module, Reg, dontTouch, withReset}
+import chisel3.util.ShiftRegister
 
 class StreamingWrapperIO(numInputChannels: Int, numOutputChannels: Int) extends Bundle {
   val inputMemAddrs = Output(Vec(numInputChannels, UInt(64.W)))
@@ -60,14 +61,9 @@ class StreamingMemoryController(inputStartAddr: Int, outputStartAddr: Int, numCo
   io.streamingCoreReset := streamingCoreReset
   val axi = io.axi
 
-  var selfReset = RegNext(reset, init = true.B) // true initialization ensures that cores see acceptable values
-  // from the controller after they are reset
-  for (i <- 0 until 2 * StreamingWrapper.CORE_PIPE_DEPTH - 1) { // wait for cores to be reset and correct values to be
-    // propagated back to us
-    selfReset = RegNext(selfReset, init = true.B)
-  }
-
-  withReset(selfReset) {
+  val delayedReset = ShiftRegister(reset.asBool(), 2 * StreamingWrapper.CORE_PIPE_DEPTH)
+  withReset(delayedReset || reset.asBool()) { // reset immediately so that cores see valid inputs once they are reset,
+    // and then reset again once the reset core values have arrived back to us
     axi.inputMemAddrLens(0) := 0.U
     axi.outputMemAddrLens(0) := 0.U
     axi.outputMemAddrIds(0) := 0.U
