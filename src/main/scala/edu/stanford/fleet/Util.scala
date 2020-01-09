@@ -3,20 +3,12 @@ package edu.stanford.fleet
 import scala.collection.mutable.ArrayBuffer
 
 object Util {
-  def arrToBits(arr: Array[Int], bitsPerElement: Int): (Int, BigInt) = {
-    var buf = BigInt(0)
-    for (e <- arr.reverseIterator) {
-      buf = (buf << bitsPerElement) | BigInt(e)
-    }
-    (arr.length * bitsPerElement, buf)
-  }
-
   def charsToBits(chars: Array[Char]): (Int, BigInt) = { // number of bits, bits
-    arrToBits(chars.map(_.toInt), 8)
-  }
-
-  def combine(first: (Int, BigInt), second: (Int, BigInt)): (Int, BigInt) = {
-    (first._1 + second._1, (second._2 << first._1) | first._2)
+    var buf = BigInt(0)
+    for (i <- 0 until chars.length) {
+      buf = (BigInt(chars(i)) << (i * 8)) | buf
+    }
+    (chars.length * 8, buf)
   }
 
   def bitsToChars(numBits: Int, bits: BigInt): Array[Char] = {

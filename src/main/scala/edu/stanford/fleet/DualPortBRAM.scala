@@ -3,14 +3,17 @@ package edu.stanford.fleet
 import chisel3._
 import chisel3.core.Bundle
 
-// a is read port, b is write port
-class DualPortBRAM(dataWidth: Int, addrWidth: Int)  extends Module {
+class DualPortBRAM(dataWidth: Int, addrWidth: Int)  extends Module /* extends BlackBox(Map("DATA" -> IntParam(dataWidth),
+                                                                        "ADDR" -> IntParam(addrWidth))) */ {
   val io = IO(new Bundle {
     val a_addr = Input(UInt(addrWidth.W))
+    val a_din = Input(UInt(dataWidth.W))
+    val a_wr = Input(Bool())
     val a_dout = Output(UInt(dataWidth.W))
     val b_addr = Input(UInt(addrWidth.W))
     val b_din = Input(UInt(dataWidth.W))
     val b_wr = Input(Bool())
+    val b_dout = Output(UInt(dataWidth.W))
   })
 
   // simulation model for BRAM
@@ -21,7 +24,12 @@ class DualPortBRAM(dataWidth: Int, addrWidth: Int)  extends Module {
 
   val regAddrA = RegNext(io.a_addr) // eliminate this if SyncReadMem
   io.a_dout := mem.read(regAddrA)
+  when (io.a_wr) {
+    mem.write(io.a_addr, io.a_din)
+  }
 
+  val regAddrB = RegNext(io.b_addr) // eliminate this if SyncReadMem
+  io.b_dout := mem.read(regAddrB)
   when (io.b_wr) {
     mem.write(io.b_addr, io.b_din)
   }
