@@ -1,6 +1,6 @@
 # Fleet (4 DDR)
 
-Run `sbt "runMain edu.stanford.fleet.StreamingWrapperDriver"` from the top level of this repo. A file called `StreamingWrapper.v` should be produced that contains the entire design.
+Run `sbt "runMain edu.stanford.fleet.StreamingWrapperDriver"` from the top level of this repo. (You may need to increase Java heap/stack space if your design is large.) A file called `StreamingWrapper.v` should be produced that contains the entire design.
 You can adjust the memory controller parameters and change the processing unit in `StreamingWrapperDriver`. `Tests` provides examples of how to instantiate several different processing units.
 
 To build the design using the standard AWS F1 flow, use the following aws-fpga directory:
