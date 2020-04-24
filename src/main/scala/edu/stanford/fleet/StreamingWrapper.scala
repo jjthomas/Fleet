@@ -49,9 +49,9 @@ class CoreIOBufferIO(transferSize: Int, addrWidth: Int) extends Bundle {
   val coreId = Input(UInt(10.W))
 }
 
-class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int, coreIO: AddrProcessingUnitIO) extends Module {
+class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Module {
   val io = IO(new Bundle {
-    val core = Flipped(coreIO.cloneType)
+    val core = Flipped(new AddrProcessingUnitIO(transferSize, addrWidth))
     val external = new CoreIOBufferIO(transferSize, addrWidth)
   })
 
@@ -156,27 +156,36 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int, coreIO: Add
   when (io.core.outputValid && io.core.outputReady) {
     nextOutputAddr := outputAddr + (1.U << io.core.lgOutputNumBytes).asUInt()
 
-    val strb = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
+    val curStrb = WireInit(outputStrb(idxFromAddr(outputAddr)))
+    val newStrb = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
       val bytesInTransfer = 1 << i
       VecInit((0 until transferSize / 8 / bytesInTransfer).map(j => {
-        (util.Fill(bytesInTransfer, "b1".U) << (j * bytesInTransfer).U).asUInt()
+        var result = util.Fill(bytesInTransfer, "b1".U)
+        if (j > 0) {
+          result = result ## curStrb(j * bytesInTransfer - 1, 0)
+        }
+        if (j < transferSize / 8 / bytesInTransfer - 1) {
+          result = curStrb(transferSize / 8 - 1, (j + 1) * bytesInTransfer) ## result
+        }
+        result
       }))((byteInTransfer(outputAddr) >> i.U).asUInt())
     }))(io.core.lgOutputNumBytes)
-    outputStrb(idxFromAddr(outputAddr)) := outputStrb(idxFromAddr(outputAddr)) | strb
+    outputStrb(idxFromAddr(outputAddr)) := newStrb
 
-    val mask = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
+    val newOutput = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
       val bitsInTransfer = (1 << i) * 8
       VecInit((0 until transferSize / bitsInTransfer).map(j => {
-        (("b" + ("1" * bitsInTransfer)).U(transferSize.W) << (j * bitsInTransfer).U).asUInt()
+        var result = io.core.outputTransfer(bitsInTransfer - 1, 0)
+        if (j > 0) {
+          result = result ## curOutput(j * bitsInTransfer - 1, 0)
+        }
+        if (j < transferSize / bitsInTransfer - 1) {
+          result = curOutput(transferSize - 1, (j + 1) * bitsInTransfer) ## result
+        }
+        result
       }))((byteInTransfer(outputAddr) >> i.U).asUInt())
     }))(io.core.lgOutputNumBytes)
-    val shiftedTransfer = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
-      val bitsInTransfer = (1 << i) * 8
-      VecInit((0 until transferSize / bitsInTransfer).map(j => {
-        (io.core.outputTransfer << (j * bitsInTransfer).U).asUInt()
-      }))((byteInTransfer(outputAddr) >> i.U).asUInt())
-    }))(io.core.lgOutputNumBytes)
-    outputBuffer.write(idxFromAddr(outputAddr), (curOutput & (~mask).asUInt()) | (shiftedTransfer & mask))
+    outputBuffer.write(idxFromAddr(outputAddr), newOutput)
   }
 
   when (io.core.finished) {
