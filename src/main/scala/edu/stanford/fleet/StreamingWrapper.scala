@@ -2,6 +2,7 @@ package edu.stanford.fleet
 
 import chisel3._
 import chisel3.core.{Bundle, Module, Reg, dontTouch}
+import chisel3.util._
 import edu.stanford.fleet.apps.PassThrough
 
 class AddrProcessingUnitIO(transferSize: Int, addrWidth: Int) extends Bundle {
@@ -25,7 +26,7 @@ class AddrProcessingUnitIO(transferSize: Int, addrWidth: Int) extends Bundle {
   val outputReady = Input(Bool())
 
   val barrierRequest = Output(Bool())
-  val barrierCleared = Input(Bool())
+  val barrierCleared = Input(Bool()) // PU should wait for barrierCleared to drop low again before proceeding
   val finished = Output(Bool())
   val coreId = Input(UInt(10.W))
 }
@@ -40,7 +41,6 @@ class CoreIOBufferIO(transferSize: Int, addrWidth: Int) extends Bundle {
   val outputAddrValid = Output(Bool())
   val outputTransfer = Output(UInt(transferSize.W))
   val outputStrobe = Output(UInt((transferSize / 8).W))
-  val outputValid = Output(Bool())
   val outputReady = Input(Bool())
 
   val barrierRequest = Output(Bool())
@@ -127,10 +127,9 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
 
   io.external.outputAddrValid := sendingOutput
   io.external.outputAddr := outputTransferAddr
-  io.external.outputValid := sendingOutput
   io.external.outputTransfer := curOutput
   io.external.outputStrobe := outputStrb(outputTransferCounter)
-  when (io.external.outputValid && io.external.outputReady) {
+  when (io.external.outputReady) {
     when (outputTransferCounter === (lineBits / transferSize - 1).U) {
       sendingOutput := false.B
       outputTransferCounter := 0.U
@@ -202,24 +201,160 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   io.core.barrierCleared := io.external.barrierCleared
 }
 
-class StreamingWrapperIO(numInputChannels: Int, numOutputChannels: Int) extends Bundle {
-  val inputMemAddrs = Output(Vec(numInputChannels, UInt(64.W)))
-  val inputMemAddrValids = Output(Vec(numInputChannels, Bool()))
-  val inputMemAddrLens = Output(Vec(numInputChannels, UInt(8.W)))
-  val inputMemAddrReadys = Input(Vec(numInputChannels, Bool()))
-  val inputMemBlocks = Input(Vec(numInputChannels, UInt(512.W)))
-  val inputMemBlockValids = Input(Vec(numInputChannels, Bool()))
-  val inputMemBlockReadys = Output(Vec(numInputChannels, Bool()))
-  val outputMemAddrs = Output(Vec(numOutputChannels, UInt(64.W)))
-  val outputMemAddrValids = Output(Vec(numOutputChannels, Bool()))
-  val outputMemAddrLens = Output(Vec(numOutputChannels, UInt(8.W)))
-  val outputMemAddrIds = Output(Vec(numOutputChannels, UInt(16.W)))
-  val outputMemAddrReadys = Input(Vec(numOutputChannels, Bool()))
-  val outputMemBlocks = Output(Vec(numOutputChannels, UInt(512.W)))
-  val outputMemBlockValids = Output(Vec(numOutputChannels, Bool()))
-  val outputMemBlockLasts = Output(Vec(numOutputChannels, Bool()))
-  val outputMemBlockReadys = Input(Vec(numOutputChannels, Bool()))
+class AXI(busWidth: Int) extends Bundle {
+  val inputMemAddr = Output(UInt(64.W))
+  val inputMemAddrValid = Output(Bool())
+  val inputMemAddrLen = Output(UInt(8.W))
+  val inputMemAddrReady = Input(Bool())
+  val inputMemBlock = Input(UInt(busWidth.W))
+  val inputMemBlockValid = Input(Bool())
+  val inputMemBlockReady = Output(Bool())
+  val outputMemAddr = Output(UInt(64.W))
+  val outputMemAddrValid = Output(Bool())
+  val outputMemAddrLen = Output(UInt(8.W))
+  val outputMemAddrId = Output(UInt(16.W))
+  val outputMemAddrReady = Input(Bool())
+  val outputMemBlock = Output(UInt(busWidth.W))
+  val outputMemStrb = Output(UInt((busWidth / 8).W))
+  val outputMemBlockValid = Output(Bool())
+  val outputMemBlockLast = Output(Bool())
+  val outputMemBlockReady = Input(Bool())
   val finished = Output(Bool())
+}
+
+class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidth: Int, numCores: Int, coreOffset: Int)
+  extends Module {
+  val io = IO(new Bundle {
+    val cores = Vec(numCores, Flipped(new CoreIOBufferIO(transferSize, addrWidth)))
+    val externalAxi = new AXI(axiBusWidth)
+    val barrierRequest = Output(Bool())
+    val barrierCleared = Input(Bool())
+  })
+
+  for (i <- 0 until numCores) {
+    io.cores(i).coreId := (coreOffset + i).U
+    io.cores(i).barrierCleared := io.barrierCleared
+  }
+  io.barrierRequest := RegNext(io.cores.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B)
+  io.externalAxi.finished := RegNext(io.cores.map(_.finished).foldLeft(true.B)(_ && _), false.B)
+
+  // these signals don't need to be set at this level
+  io.externalAxi.inputMemAddrLen := (lineBits / axiBusWidth).U
+  io.externalAxi.outputMemAddrLen := (lineBits / axiBusWidth).U
+  io.externalAxi.outputMemAddrId := 0.U
+  io.externalAxi.outputMemBlockLast := false.B
+
+  val coreSelecting :: addressReading :: dataFetching :: dataFlushing :: Nil = util.Enum(4)
+
+  { // isolate from output logic
+    val inputCore = Reg(UInt(util.log2Ceil(numCores).W))
+    val inputState = RegInit(coreSelecting)
+    val inputFetchCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
+    val inputFlushCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
+    val inputAddr = Reg(UInt(addrWidth.W))
+    val inputData = Reg(UInt(lineBits.W))
+
+    io.externalAxi.inputMemAddr := inputAddr
+    io.externalAxi.inputMemAddrValid := inputState === dataFetching
+    io.externalAxi.inputMemBlockReady := inputState === dataFetching
+
+    for (i <- 0 until numCores) {
+      io.cores(i).inputTransfer := inputData(transferSize - 1, 0)
+      io.cores(i).inputValid := (inputState === dataFlushing) && (inputCore === i.U)
+    }
+
+    val coreInputAddrValids = io.cores.map(_.inputAddrValid)
+    val someInputAddrValid = VecInit(coreInputAddrValids).asUInt() =/= 0.U
+    val selectedInputCore = util.PriorityEncoder(coreInputAddrValids)
+    switch(inputState) {
+      is(coreSelecting) {
+        when(someInputAddrValid) {
+          inputCore := selectedInputCore
+          inputState := addressReading
+        }
+      }
+      is(addressReading) {
+        inputAddr := io.cores(inputCore).inputAddr
+        inputState := dataFetching
+      }
+      is(dataFetching) {
+        when(io.externalAxi.inputMemBlockValid) {
+          inputData := io.externalAxi.inputMemBlock ## inputData(lineBits - 1, axiBusWidth)
+          when(inputFetchCounter === (lineBits / axiBusWidth - 1).U) {
+            inputFetchCounter := 0.U
+            inputState := dataFlushing
+          }.otherwise {
+            inputFetchCounter := inputFetchCounter + 1.U
+          }
+        }
+      }
+      is(dataFlushing) {
+        inputData := inputData(lineBits - 1, transferSize)
+        when(inputFlushCounter === (lineBits / transferSize - 1).U) {
+          inputFlushCounter := 0.U
+          inputState := coreSelecting
+        }.otherwise {
+          inputFlushCounter := inputFlushCounter + 1.U
+        }
+      }
+    }
+  }
+
+  val outputCore = Reg(UInt(util.log2Ceil(numCores).W))
+  val outputState = RegInit(coreSelecting)
+  val outputFetchCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
+  val outputFlushCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
+  val outputAddr = Reg(UInt(addrWidth.W))
+  val outputData = Reg(UInt(lineBits.W))
+  val outputStrb = Reg(UInt((lineBits / 8).W))
+
+  io.externalAxi.outputMemAddr := outputAddr
+  io.externalAxi.outputMemAddrValid := outputState === dataFlushing
+  io.externalAxi.outputMemBlockValid := outputState === dataFlushing
+  io.externalAxi.outputMemBlock := outputData(axiBusWidth - 1, 0)
+  io.externalAxi.outputMemStrb := outputStrb(axiBusWidth / 8 - 1, 0)
+
+  for (i <- 0 until numCores) {
+    io.cores(i).outputReady := (outputState === dataFetching) && (outputCore === i.U)
+  }
+
+  val coreOutputAddrValids = io.cores.map(_.outputAddrValid)
+  val someOutputAddrValid = VecInit(coreOutputAddrValids).asUInt() =/= 0.U
+  val selectedOutputCore = util.PriorityEncoder(coreOutputAddrValids)
+  switch(outputState) {
+    is(coreSelecting) {
+      when(someOutputAddrValid) {
+        outputCore := selectedOutputCore
+        outputState := addressReading
+      }
+    }
+    is(addressReading) {
+      outputAddr := io.cores(outputCore).outputAddr
+      outputState := dataFetching
+    }
+    is(dataFetching) {
+      outputData := io.cores(outputCore).outputTransfer ## outputData(lineBits - 1, transferSize)
+      outputStrb := io.cores(outputCore).outputStrobe ## outputStrb(lineBits / 8 - 1, transferSize / 8)
+      when(outputFetchCounter === (lineBits / transferSize - 1).U) {
+        outputFetchCounter := 0.U
+        outputState := dataFlushing
+      }.otherwise {
+        outputFetchCounter := outputFetchCounter + 1.U
+      }
+    }
+    is(dataFlushing) {
+      when (io.externalAxi.outputMemBlockReady) {
+        outputData := outputData(lineBits - 1, axiBusWidth)
+        outputStrb := outputStrb(lineBits / 8 - 1, axiBusWidth / 8)
+        when(outputFlushCounter === (lineBits / axiBusWidth - 1).U) {
+          outputFlushCounter := 0.U
+          outputState := coreSelecting
+        }.otherwise {
+          outputFlushCounter := outputFlushCounter + 1.U
+        }
+      }
+    }
+  }
 }
 
 class StreamingMemoryControllerIO(numInputChannels: Int, numOutputChannels: Int, numStreamingCores: Int,
