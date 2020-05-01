@@ -233,7 +233,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   val coreSelecting :: addressReading :: dataFetching :: dataFlushing :: Nil = util.Enum(4)
 
   { // isolate from output logic
-    val inputCore = Reg(UInt(util.log2Ceil(numCores).W))
+    val inputCore = Reg(UInt(math.max(1, util.log2Ceil(numCores)).W))
     val inputState = RegInit(coreSelecting)
     val inputFetchCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
     val inputFlushCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
@@ -285,7 +285,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
     }
   }
 
-  val outputCore = Reg(UInt(util.log2Ceil(numCores).W))
+  val outputCore = Reg(UInt(math.max(1, util.log2Ceil(numCores)).W))
   val outputState = RegInit(coreSelecting)
   val outputFetchCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
   val outputFlushCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
@@ -379,8 +379,8 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
 
   { // isolate from output logic
     val inputReqInFlight = RegInit(VecInit(Seq.fill(numChildren)(false.B)))
-    val inputAddrPtr = RegInit(0.U(log2Ceil(numChildren).W))
-    val inputDataPtr = RegInit(0.U(log2Ceil(numChildren).W))
+    val inputAddrPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
+    val inputDataPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
     val inputDataCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
 
     io.external.inputMemAddr := io.children(inputAddrPtr).inputMemAddr
@@ -424,9 +424,9 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
   }
 
   val outputReqInFlight = RegInit(VecInit(Seq.fill(numChildren)(false.B)))
-  val outputAddrPtr = RegInit(0.U(log2Ceil(numChildren).W))
+  val outputAddrPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
   val outputAddrId = RegInit(0.U(16.W))
-  val outputDataPtr = RegInit(0.U(log2Ceil(numChildren).W))
+  val outputDataPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
   val outputDataCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
 
   io.external.outputMemAddr := io.children(outputAddrPtr).outputMemAddr

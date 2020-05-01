@@ -14,9 +14,9 @@ class AddrPassThrough(transferSize: Int, addrWidth: Int, readAddr: Int, writeAdd
 
   io.barrierRequest := false.B
 
-  io.inputAddr := readAddr.U
+  io.inputAddr := readAddr.U + (io.coreId * numBytes.U)
   io.inputAddrValid := firstCycle
-  io.outputAddr := writeAddr.U
+  io.outputAddr := writeAddr.U + (io.coreId * numBytes.U)
   io.outputAddrValid := firstCycle
 
   io.outputValid := io.inputValid && !io.finished
