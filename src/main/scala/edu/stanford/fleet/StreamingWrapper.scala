@@ -1,9 +1,8 @@
 package edu.stanford.fleet
 
 import chisel3._
-import chisel3.core.{Bundle, Module, Reg, dontTouch}
 import chisel3.util._
-import edu.stanford.fleet.apps.PassThrough
+import edu.stanford.fleet.apps.{AddrPassThrough, PassThrough}
 
 class AddrProcessingUnitIO(transferSize: Int, addrWidth: Int) extends Bundle {
   // new input addr cannot be presented on same cycle as input request
@@ -474,80 +473,30 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
   }
 }
 
-class StreamingMemoryControllerIO(numInputChannels: Int, numOutputChannels: Int, numStreamingCores: Int,
-                                  streamingCoreBramWidth: Int, streamingCoreNumBramAddrs: Int) extends Bundle {
-  val axi = new StreamingWrapperIO(numInputChannels, numOutputChannels)
-  val streamingCores =
-    Flipped(Vec(numStreamingCores, new StreamingCoreIO(streamingCoreBramWidth, streamingCoreNumBramAddrs)))
-}
+class StreamingWrapper(val axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
+                       numCores: Int, numMiddleArbiters: Int, puFactory: () => AddrProcessingUnitIO) extends Module {
+  val io = IO(new AXI(axiBusWidth))
 
-class StreamingMemoryController(numInputChannels: Int, inputChannelStartAddrs: Array[Long],
-                                inputChannelBounds: Array[Int], numOutputChannels: Int, outputChannelBounds: Array[Int],
-                                numCores: Int, inputGroupSize: Int, inputNumReadAheadGroups: Int, outputGroupSize: Int,
-                                bramWidth: Int, bramNumAddrs: Int)
-  extends Module {
-  val io = IO(new StreamingMemoryControllerIO(numInputChannels, numOutputChannels, numCores, bramWidth, bramNumAddrs))
-  assert(numCores % numInputChannels == 0)
-  assert((numCores / numInputChannels) % inputGroupSize == 0)
-  assert(numCores >= 2 * inputGroupSize)
-  assert(inputNumReadAheadGroups >= 1)
-  assert(util.isPow2(inputNumReadAheadGroups))
-  assert(numCores / numInputChannels >= inputNumReadAheadGroups * inputGroupSize)
-  assert(numCores % numOutputChannels == 0)
-  assert((numCores / numOutputChannels) % outputGroupSize == 0)
-  assert(numCores >= 2 * outputGroupSize)
-  assert(util.isPow2(bramWidth))
-  assert(util.isPow2(bramNumAddrs))
-  assert(bramWidth * bramNumAddrs >= 512)
-  val bramAddrBits = util.log2Ceil(bramNumAddrs)
-  val bramLineSize = bramWidth * bramNumAddrs
-  val bytesInLine = bramLineSize / 8
-  val bramNumNativeLines = bramLineSize / 512
-  val bramAddrsPerNativeLine = 512 / bramWidth
-
-
-  val cores = io.streamingCores
-  val axi = io.axi
-
-}
-
-class StreamingWrapper(val numInputChannels: Int, val inputChannelStartAddrs: Array[Long], val numOutputChannels: Int,
-                       val outputChannelStartAddrs: Array[Long], val numCores: Int, inputGroupSize: Int,
-                       inputNumReadAheadGroups: Int, outputGroupSize: Int, bramWidth: Int, bramNumAddrs: Int,
-                       val puFactory: (Int) => ProcessingUnit) extends Module {
-  val io = IO(new StreamingWrapperIO(numInputChannels, numOutputChannels))
-  val bramLineSize = bramWidth * bramNumAddrs
-  val bytesInLine = bramLineSize / 8
-  def numCoresForInputChannel(channel: Int): Int = {
-    (numCores - 1 - channel) / numInputChannels + 1
+  val coresPerMiddleArbiter = numCores / numMiddleArbiters
+  val remainder = numCores % numMiddleArbiters
+  val topArbiter = Module(new TopArbiter(axiBusWidth, lineBits, numMiddleArbiters))
+  var curCoreIdx = 0
+  for (i <- 0 until numMiddleArbiters) {
+    val coresForArb = if (numMiddleArbiters - i <= remainder) coresPerMiddleArbiter + 1 else coresPerMiddleArbiter
+    val arb = Module(new MiddleArbiter(axiBusWidth, lineBits, coreTransferSize, coreAddrWidth, coresForArb, curCoreIdx))
+    for (j <- 0 until coresForArb) {
+      val ioBuffer = Module(new CoreIOBuffer(lineBits, coreTransferSize, coreAddrWidth))
+      ioBuffer.io.core <> puFactory()
+      arb.io.cores(j) <> ioBuffer.io.external
+    }
+    topArbiter.io.children(i) <> arb.io.external
+    curCoreIdx += coresForArb
   }
-  def numCoresForOutputChannel(channel: Int): Int = {
-    (numCores - 1 - channel) / numOutputChannels + 1
-  }
-  // TODO we should pass in these bounds as arguments so there is a well-defined mapping from
-  // input to output streams that doesn't depend on the details of the below code
-  val inputChannelBounds = new Array[Int](numInputChannels + 1)
-  val outputChannelBounds = new Array[Int](numOutputChannels + 1)
-  inputChannelBounds(0) = 0
-  outputChannelBounds(0) = 0
-  for (i <- 0 until numInputChannels) {
-    inputChannelBounds(i + 1) = inputChannelBounds(i) + numCoresForInputChannel(i)
-  }
-  for (i <- 0 until numOutputChannels) {
-    outputChannelBounds(i + 1) = outputChannelBounds(i) + numCoresForOutputChannel(i)
-  }
-
-  val mc = Module(new StreamingMemoryController(numInputChannels, inputChannelStartAddrs, inputChannelBounds,
-    numOutputChannels, outputChannelBounds, numCores, inputGroupSize, inputNumReadAheadGroups,
-    outputGroupSize, bramWidth, bramNumAddrs))
-  mc.axi <> io
-  for (i <- 0 until numCores) {
-    val core = Module(new StreamingCore(bramWidth, bramNumAddrs, puFactory, i))
-    mc.cores(i) <> core.io
-  }
+  io <> topArbiter.io.external
 }
 
 object StreamingWrapperDriver extends App {
-  chisel3.Driver.execute(args, () => new StreamingWrapper(4, Array(0L, 0L, 0L, 0L), 4, Array(1000000000L, 1000000000L,
-    1000000000L, 1000000000L), 512, 16, 2, 16, 32, 32, (coreId: Int) => new PassThrough(8, coreId)))
+  chisel3.Driver.execute(args, () => new StreamingWrapper(512, 1024, 32, 32,
+    256, 16, () => Module(new AddrPassThrough(32, 32, 0,
+      10000, 10000, 4)).io))
 }
