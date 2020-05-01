@@ -1,7 +1,6 @@
 package edu.stanford.fleet
 
 import chisel3._
-import chisel3.core.Bundle
 
 class DualPortBRAM(dataWidth: Int, addrWidth: Int)  extends Module /* extends BlackBox(Map("DATA" -> IntParam(dataWidth),
                                                                         "ADDR" -> IntParam(addrWidth))) */ {

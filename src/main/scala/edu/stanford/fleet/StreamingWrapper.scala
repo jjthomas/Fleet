@@ -2,9 +2,9 @@ package edu.stanford.fleet
 
 import chisel3._
 import chisel3.util._
-import edu.stanford.fleet.apps.{AddrPassThrough, PassThrough}
+import edu.stanford.fleet.apps._
 
-class AddrProcessingUnitIO(transferSize: Int, addrWidth: Int) extends Bundle {
+class AddrProcessingUnitIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
   // new input addr cannot be presented on same cycle as input request
   // at least one input request must be made for each new input addr
   val inputAddr = Output(UInt(addrWidth.W))
@@ -31,7 +31,7 @@ class AddrProcessingUnitIO(transferSize: Int, addrWidth: Int) extends Bundle {
   val coreId = Input(UInt(10.W))
 }
 
-class CoreIOBufferIO(transferSize: Int, addrWidth: Int) extends Bundle {
+class CoreIOBufferIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
   val inputAddr = Output(UInt(addrWidth.W)) // aligned to line size
   val inputAddrValid = Output(Bool())
   val inputTransfer = Input(UInt(transferSize.W))
@@ -201,7 +201,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   io.core.barrierCleared := io.external.barrierCleared
 }
 
-class MiddleArbiterIO(axiBusWidth: Int) extends Bundle {
+class MiddleArbiterIO(val axiBusWidth: Int) extends Bundle {
   val inputMemAddr = Output(UInt(64.W))
   val inputMemAddrValid = Output(Bool())
   val inputMemBlock = Input(UInt(axiBusWidth.W))
@@ -341,7 +341,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   }
 }
 
-class AXI(busWidth: Int) extends Bundle {
+class AXI(val busWidth: Int) extends Bundle {
   val inputMemAddr = Output(UInt(64.W))
   val inputMemAddrValid = Output(Bool())
   val inputMemAddrLen = Output(UInt(8.W))
@@ -473,7 +473,7 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
   }
 }
 
-class StreamingWrapper(val axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
+class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
                        numCores: Int, numMiddleArbiters: Int, puFactory: () => AddrProcessingUnitIO) extends Module {
   val io = IO(new AXI(axiBusWidth))
 
