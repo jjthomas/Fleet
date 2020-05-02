@@ -55,8 +55,14 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
     val external = new CoreIOBufferIO(transferSize, addrWidth)
   })
 
+  def lineFromAddr(addr: UInt): UInt = {
+    addr(addrWidth - 1, util.log2Ceil(lineBits / 8))
+  }
+  def padLine(line: UInt): UInt = {
+    line ## 0.U(util.log2Ceil(lineBits / 8).W)
+  }
   def roundDownToLine(addr: UInt): UInt = {
-    addr(addrWidth - 1, util.log2Ceil(lineBits / 8)) ## 0.U(util.log2Ceil(lineBits / 8).W)
+    padLine(lineFromAddr(addr))
   }
   def idxFromAddr(addr: UInt): UInt = {
     addr(util.log2Ceil(lineBits / 8) - 1, util.log2Ceil(transferSize / 8))
@@ -67,23 +73,20 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
 
   io.core.coreId := io.external.coreId
 
-  val inputAddr = RegInit(util.Fill(addrWidth, 1.U))
+  val inputAddr = Reg(UInt(addrWidth.W))
+  val storedInputLine = Reg(UInt((addrWidth - util.log2Ceil(lineBits / 8)).W))
+  val hasStoredInputLine = RegInit(false.B)
   val inputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val fetchingInput = RegInit(false.B)
   val inputTransferCounter = RegInit(0.U(util.log2Ceil(lineBits / transferSize).W))
-
-  val nextInputAddr = WireInit(inputAddr)
-  inputAddr := nextInputAddr
-  val nextInputAddrInCurLine = roundDownToLine(inputAddr) === roundDownToLine(nextInputAddr)
-  when (!nextInputAddrInCurLine) {
-    fetchingInput := true.B
-  }
 
   io.external.inputAddrValid := fetchingInput
   io.external.inputAddr := roundDownToLine(inputAddr)
   when (io.external.inputValid) {
     inputBuffer.write(inputTransferCounter, io.external.inputTransfer)
     when (inputTransferCounter === (lineBits / transferSize - 1).U) {
+      hasStoredInputLine := true.B
+      storedInputLine := lineFromAddr(inputAddr)
       fetchingInput := false.B
       inputTransferCounter := 0.U
     } .otherwise {
@@ -92,19 +95,22 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   }
 
   when (io.core.inputAddrValid) {
-    nextInputAddr := io.core.inputAddr
+    inputAddr := io.core.inputAddr
   }
-
-  io.core.inputValid := !fetchingInput
+  io.core.inputValid := storedInputLine === lineFromAddr(inputAddr) && hasStoredInputLine
+  when (io.core.inputReady && !io.core.inputValid && !fetchingInput) {
+    fetchingInput := true.B
+  }
   val curInput = WireInit(inputBuffer.read(idxFromAddr(inputAddr)))
   io.core.inputTransfer :=
     VecInit((0 until transferSize / 8).map(i => curInput(transferSize - 1, i * 8)))(byteInTransfer(inputAddr))
   when (io.core.inputValid && io.core.inputReady) {
-    nextInputAddr := inputAddr + (1.U << io.core.lgInputNumBytes).asUInt()
+    inputAddr := inputAddr + (1.U << io.core.lgInputNumBytes).asUInt()
   }
 
-  val outputAddr = RegInit(0.U(addrWidth.W))
-  val outputTransferAddr = Reg(UInt(addrWidth.W))
+  val outputAddr = Reg(UInt(addrWidth.W))
+  val storedOutputLine = Reg(UInt((addrWidth - util.log2Ceil(lineBits / 8)).W))
+  val hasStoredOutputLine = RegInit(false.B)
   val outputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val outputStrb = RegInit(VecInit(Seq.fill(lineBits / transferSize)(0.U((transferSize / 8).W))))
   val sendingOutput = RegInit(false.B)
@@ -114,32 +120,26 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   val finishRequested = RegInit(false.B)
   val sendFinish = RegInit(false.B)
 
-  val nextOutputAddr = WireInit(outputAddr)
-  outputAddr := nextOutputAddr
-  val nextOutputAddrInCurLine = roundDownToLine(outputAddr) === roundDownToLine(nextOutputAddr)
-  when (!nextOutputAddrInCurLine || (io.core.barrierRequest && !barrierRequested) ||
-    (io.core.finished && !finishRequested)) {
-    sendingOutput := true.B
-    outputTransferAddr := roundDownToLine(outputAddr)
-  }
-
   val curOutput = WireInit(outputBuffer.read(Mux(sendingOutput, outputTransferCounter, idxFromAddr(outputAddr))))
 
   io.external.outputAddrValid := sendingOutput
-  io.external.outputAddr := outputTransferAddr
+  io.external.outputAddr := padLine(storedOutputLine)
   io.external.outputTransfer := curOutput
   io.external.outputStrobe := outputStrb(outputTransferCounter)
   when (io.external.outputReady) {
     when (outputTransferCounter === (lineBits / transferSize - 1).U) {
+      storedOutputLine := lineFromAddr(outputAddr)
       sendingOutput := false.B
       outputTransferCounter := 0.U
       for (i <- 0 until lineBits / transferSize) {
         outputStrb(i) := 0.U
       }
       when (barrierRequested) {
+        barrierRequested := false.B
         sendBarrier := true.B
       }
       when (finishRequested) {
+        finishRequested := false.B
         sendFinish := true.B
       }
     } .otherwise {
@@ -148,12 +148,19 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   }
 
   when (io.core.outputAddrValid) {
-    nextOutputAddr := io.core.outputAddr
+    outputAddr := io.core.outputAddr
+    when (!hasStoredOutputLine) {
+      storedOutputLine := lineFromAddr(io.core.outputAddr)
+      hasStoredOutputLine := true.B
+    }
   }
-
-  io.core.outputReady := !sendingOutput
+  io.core.outputReady := storedOutputLine === lineFromAddr(outputAddr) && hasStoredOutputLine
+  when (hasStoredOutputLine && ((io.core.outputValid && !io.core.outputReady) || barrierRequested || finishRequested) &&
+    !sendingOutput) {
+    sendingOutput := true.B
+  }
   when (io.core.outputValid && io.core.outputReady) {
-    nextOutputAddr := outputAddr + (1.U << io.core.lgOutputNumBytes).asUInt()
+    outputAddr := outputAddr + (1.U << io.core.lgOutputNumBytes).asUInt()
 
     val curStrb = WireInit(outputStrb(idxFromAddr(outputAddr)))
     val newStrb = VecInit((0 until util.log2Ceil(transferSize / 8) + 1).map(i => {
@@ -187,14 +194,14 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
     outputBuffer.write(idxFromAddr(outputAddr), newOutput)
   }
 
-  when (io.core.finished) {
+  when (io.core.finished && !finishRequested && !sendFinish) {
     finishRequested := true.B
   }
-  when (io.external.barrierCleared) {
-    barrierRequested := false.B
-    sendBarrier := false.B
-  } .elsewhen (io.core.barrierRequest) {
+  when (io.core.barrierRequest && !barrierRequested && !sendBarrier) {
     barrierRequested := true.B
+  }
+  when (io.external.barrierCleared) {
+    sendBarrier := false.B
   }
   io.external.barrierRequest := sendBarrier
   io.external.finished := sendFinish

@@ -39,8 +39,8 @@ class StreamingWrapperTests(c: StreamingWrapper, input: Array[Byte],
         println("Fetching data " + transfer.toString(16) + " from address " + inputAddr)
         poke(c.io.inputMemBlock, transfer)
         inputAddr += transferBytes
+        step(1)
       }
-      step(1)
       poke(c.io.inputMemBlockValid, 0)
     }
 
@@ -55,19 +55,19 @@ class StreamingWrapperTests(c: StreamingWrapper, input: Array[Byte],
           step(1)
         }
         poke(c.io.outputMemBlockReady, 1)
+        if (i == numOutputTransfers - 1) {
+          expect(c.io.outputMemBlockLast, 1)
+        } else {
+          expect(c.io.outputMemBlockLast, 0)
+        }
         val transfer = peek(c.io.outputMemBlock)
         val strb = peek(c.io.outputMemStrb)
         println("Writing data " + transfer.toString(16) + " with mask " + strb.toString(2) + " to address " +
           outputAddr)
         writeTransfer(outputAddr, transfer, strb)
         outputAddr += transferBytes
-        if (i == numOutputTransfers - 1) {
-          assert(peek(c.io.outputMemBlockLast) == BigInt(1))
-        } else {
-          assert(peek(c.io.outputMemBlockLast) == BigInt(0))
-        }
+        step(1)
       }
-      step(1)
       poke(c.io.outputMemBlockReady, 0)
     }
 
@@ -75,7 +75,7 @@ class StreamingWrapperTests(c: StreamingWrapper, input: Array[Byte],
   }
 
   for (i <- 0 until memory.length) {
-    assert(memory(i) == expectedOutput(i), "Expected output at address " + i + " to be " + expectedOutput(i) +
+    expect(memory(i) == expectedOutput(i), "Expected output at address " + i + " to be " + expectedOutput(i) +
       ", but was " + memory(i))
   }
 }

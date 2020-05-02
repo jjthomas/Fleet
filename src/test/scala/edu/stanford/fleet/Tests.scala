@@ -1,6 +1,7 @@
 package edu.stanford.fleet
 
 import scala.collection.mutable.ArrayBuffer
+import scala.util.Properties.envOrElse
 import chisel3._
 import chisel3.iotesters.Driver
 import edu.stanford.fleet.apps._
@@ -35,7 +36,7 @@ object Tests {
     } else {
       ""
     }
-    val backendName = defaultBackend.split(" ").head
+    val backendName = envOrElse("TESTER_BACKENDS", defaultBackend).split(" ").head
     val testsToRun = if (args.isEmpty || args.head == "all") {
       tests.keys.toSeq.sorted.toArray
     }
