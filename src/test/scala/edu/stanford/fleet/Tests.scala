@@ -10,8 +10,8 @@ object Tests {
   val tests = Map(
     "AddrPassThrough1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(32, 64, 16, 32,
-        1, 1, () => Module(new AddrPassThrough(16, 32,
-          0, 8, 8, 2)).io),
+        4, 2, (coreId: Int) => Module(new AddrPassThrough(16, 32,
+          0, 8, 2, 2, coreId)).io),
         backendName) {
         (c) => {
           val input = (0 until 16).map(i => if (i < 8) i.toByte else 0.toByte).toArray

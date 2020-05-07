@@ -5,7 +5,7 @@ import chisel3.util._
 import edu.stanford.fleet.AddrProcessingUnitIO
 
 class AddrPassThrough(transferSize: Int, addrWidth: Int, readAddr: Int, writeAddr: Int, numBytes: Int,
-                      wordBytes: Int) extends Module {
+                      wordBytes: Int, coreId: Int) extends Module {
   val io = IO(new AddrProcessingUnitIO(transferSize, addrWidth))
 
   val bytesCopied = RegInit(0.U(log2Ceil(numBytes + 1).W))
@@ -14,9 +14,9 @@ class AddrPassThrough(transferSize: Int, addrWidth: Int, readAddr: Int, writeAdd
 
   io.barrierRequest := false.B
 
-  io.inputAddr := readAddr.U + (io.coreId * numBytes.U)
+  io.inputAddr := (readAddr + coreId * numBytes).U
   io.inputAddrValid := firstCycle
-  io.outputAddr := writeAddr.U + (io.coreId * numBytes.U)
+  io.outputAddr := (writeAddr + coreId * numBytes).U
   io.outputAddrValid := firstCycle
 
   io.outputValid := io.inputValid && !io.finished

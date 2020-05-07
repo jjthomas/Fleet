@@ -28,7 +28,6 @@ class AddrProcessingUnitIO(val transferSize: Int, val addrWidth: Int) extends Bu
   val barrierCleared = Input(Bool()) // PU should wait for barrierCleared to drop low again before proceeding (but
   // should clear the request immediately)
   val finished = Output(Bool())
-  val coreId = Input(UInt(10.W))
 }
 
 class CoreIOBufferIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
@@ -46,7 +45,6 @@ class CoreIOBufferIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
   val barrierRequest = Output(Bool())
   val barrierCleared = Input(Bool())
   val finished = Output(Bool())
-  val coreId = Input(UInt(10.W))
 }
 
 class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Module {
@@ -70,8 +68,6 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   def byteInTransfer(addr: UInt): UInt = {
     addr(util.log2Ceil(transferSize / 8) - 1, 0)
   }
-
-  io.core.coreId := io.external.coreId
 
   val inputAddr = Reg(UInt(addrWidth.W))
   val storedInputLine = Reg(UInt((addrWidth - util.log2Ceil(lineBits / 8)).W))
@@ -97,6 +93,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   when (io.core.inputAddrValid) {
     inputAddr := io.core.inputAddr
   }
+  // TODO could potentially start PU before input line is fully read, similar story on output side
   io.core.inputValid := storedInputLine === lineFromAddr(inputAddr) && hasStoredInputLine
   when (io.core.inputReady && !io.core.inputValid && !fetchingInput) {
     fetchingInput := true.B
@@ -223,15 +220,13 @@ class MiddleArbiterIO(val axiBusWidth: Int) extends Bundle {
   val barrierCleared = Input(Bool())
 }
 
-class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidth: Int, numCores: Int, coreOffset: Int)
-  extends Module {
+class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidth: Int, numCores: Int) extends Module {
   val io = IO(new Bundle {
     val cores = Vec(numCores, Flipped(new CoreIOBufferIO(transferSize, addrWidth)))
     val external = new MiddleArbiterIO(axiBusWidth)
   })
 
   for (i <- 0 until numCores) {
-    io.cores(i).coreId := (coreOffset + i).U
     io.cores(i).barrierCleared := io.external.barrierCleared
   }
   io.external.barrierRequest := RegNext(io.cores.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B)
@@ -481,7 +476,7 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
 }
 
 class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
-                       numCores: Int, numMiddleArbiters: Int, puFactory: () => AddrProcessingUnitIO) extends Module {
+                       numCores: Int, numMiddleArbiters: Int, puFactory: (Int) => AddrProcessingUnitIO) extends Module {
   val io = IO(new AXI(axiBusWidth))
 
   val coresPerMiddleArbiter = numCores / numMiddleArbiters
@@ -490,10 +485,10 @@ class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, c
   var curCoreIdx = 0
   for (i <- 0 until numMiddleArbiters) {
     val coresForArb = if (numMiddleArbiters - i <= remainder) coresPerMiddleArbiter + 1 else coresPerMiddleArbiter
-    val arb = Module(new MiddleArbiter(axiBusWidth, lineBits, coreTransferSize, coreAddrWidth, coresForArb, curCoreIdx))
+    val arb = Module(new MiddleArbiter(axiBusWidth, lineBits, coreTransferSize, coreAddrWidth, coresForArb))
     for (j <- 0 until coresForArb) {
       val ioBuffer = Module(new CoreIOBuffer(lineBits, coreTransferSize, coreAddrWidth))
-      ioBuffer.io.core <> puFactory()
+      ioBuffer.io.core <> puFactory(curCoreIdx + j)
       arb.io.cores(j) <> ioBuffer.io.external
     }
     topArbiter.io.children(i) <> arb.io.external
@@ -504,6 +499,6 @@ class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, c
 
 object StreamingWrapperDriver extends App {
   chisel3.Driver.execute(args, () => new StreamingWrapper(512, 1024, 32, 32,
-    256, 16, () => Module(new AddrPassThrough(32, 32, 0,
-      10000, 10000, 4)).io))
+    256, 16, (coreId: Int) => Module(new AddrPassThrough(32, 32, 0,
+      65536, 256, 4, coreId)).io))
 }
