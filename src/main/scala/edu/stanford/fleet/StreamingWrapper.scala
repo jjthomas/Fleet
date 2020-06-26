@@ -72,6 +72,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   val inputAddr = Reg(UInt(addrWidth.W))
   val storedInputLine = Reg(UInt((addrWidth - util.log2Ceil(lineBits / 8)).W))
   val hasStoredInputLine = RegInit(false.B)
+  // TODO this is getting incorrectly synthesized to a BRAM; attribute (* rw_addr_collision= "yes" *) may solve
   val inputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val fetchingInput = RegInit(false.B)
   val inputTransferCounter = RegInit(0.U(util.log2Ceil(lineBits / transferSize).W))
