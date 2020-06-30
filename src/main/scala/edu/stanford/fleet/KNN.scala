@@ -117,5 +117,5 @@ class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 3
 }
 
 object KNN extends App {
-
+  chisel3.Driver.execute(args, () => new KNN(args(0).toInt, args(1).toInt, args(2).toInt))
 }
