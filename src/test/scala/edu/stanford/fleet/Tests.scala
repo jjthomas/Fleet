@@ -63,6 +63,15 @@ object Tests {
             Util.arrToBits(output.toArray, 8))
         }
       }
+    },
+    "KNN1" -> { (backendName: String) =>
+      Driver(() => new StreamingWrapper(0, 1000000000, 1,
+        (coreId: Int) => new KNN(3, 2, 2)), backendName) {
+        (c) => {
+          new StreamingWrapperTests(c, Util.arrToBits(Array(4, 0, 0, 0, 1, 6, 0, 0, 2, 0, 4, 0), 32),
+            Util.arrToBits(Array(0, 0, 1, 4, 2, 16, 0, 1, 1, 5, 2, 17), 32))
+        }
+      }
     }
   )
   def main(args: Array[String]): Unit = {

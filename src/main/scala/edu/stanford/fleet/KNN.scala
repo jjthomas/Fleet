@@ -19,14 +19,14 @@ class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 3
       topIds(i)(j) = RegInit(0.asUInt(32.W))
       topDists(i)(j) = RegInit(("b" + "1" * 32).U)
     }
-    curDists(i) = RegInit(0.asUInt(32.W))
+    curDists(i) = RegInit(("b" + "1" * 32).U)
   }
-  val loadingVectorCounter = RegInit(0.asUInt(log2Ceil(numVectors).W))
-  val loadingElementCounter = RegInit(0.asUInt(log2Ceil(vectorSize).W))
+  val loadingVectorCounter = RegInit(0.asUInt(math.max(1, log2Ceil(numVectors)).W))
+  val loadingElementCounter = RegInit(0.asUInt(math.max(1, log2Ceil(vectorSize)).W))
   val mainVectorCounter = RegInit(0.asUInt(32.W))
-  val mainElementCounter = RegInit(0.asUInt(log2Ceil(vectorSize).W))
-  val emittingVectorCounter = RegInit(0.asUInt(log2Ceil(numVectors).W))
-  val emittingNeighborCounter = RegInit(0.asUInt(log2Ceil(k).W))
+  val mainElementCounter = RegInit(0.asUInt(math.max(1, log2Ceil(vectorSize)).W))
+  val emittingVectorCounter = RegInit(0.asUInt(math.max(1, log2Ceil(numVectors)).W))
+  val emittingNeighborCounter = RegInit(0.asUInt(math.max(1, log2Ceil(k)).W))
   val emittingDistance = RegInit(false.B) // as opposed to emitting ID
 
   switch (state) {
@@ -52,7 +52,7 @@ class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 3
       when (io.inputValid) {
         for (i <- 0 until numVectors) {
           val diff = WireInit(io.inputWord(15, 0).asSInt() - vectors(i).read(mainElementCounter).asSInt())
-          curDists(i) := curDists(i) + (diff * diff).asUInt()
+          curDists(i) := Mux(mainElementCounter === 0.U, 0.U, curDists(i)) + (diff * diff).asUInt()
         }
         when (mainElementCounter === (vectorSize - 1).U) {
           mainVectorCounter := mainVectorCounter + 1.U
@@ -94,27 +94,24 @@ class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 3
             emittingNeighborCounter := emittingNeighborCounter + 1.U
           }
           emittingDistance := false.B
+          // shift out
           for (i <- 0 until numVectors) {
-            when (emittingVectorCounter === i.U) {
-              for (j <- 0 until k - 1) {
-                // shift out
-                topDists(i)(j) := topDists(i)(j + 1)
-                topIds(i)(j) := topIds(i)(j + 1)
-              }
-              io.outputWord := topDists(i)(0)
+            for (j <- 0 until k - 1) {
+              topDists(i)(j) := topDists(i)(j + 1)
+              topIds(i)(j) := topIds(i)(j + 1)
+            }
+            if (i < numVectors - 1) {
+              topDists(i)(k - 1) := topDists(i + 1)(0)
+              topIds(i)(k - 1) := topIds(i + 1)(0)
             }
           }
         } .otherwise {
           emittingDistance := true.B
-          for (i <- 0 until numVectors) {
-            when (emittingVectorCounter === i.U) {
-              io.outputWord := topIds(i)(0)
-            }
-          }
         }
       }
     }
   }
+  io.outputWord := Mux(emittingDistance, topDists(0)(0), topIds(0)(0))
   io.outputValid := state === emittingNeighbors
   io.outputFinished := state === finished
 }
