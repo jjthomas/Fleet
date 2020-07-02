@@ -72,6 +72,15 @@ object Tests {
             Util.arrToBits(Array(0, 0, 1, 4, 2, 16, 0, 1, 1, 5, 2, 17), 32))
         }
       }
+    },
+    "TSPrediction1" -> { (backendName: String) =>
+      Driver(() => new StreamingWrapper(0, 1000000000, 1,
+        (coreId: Int) => new TSPrediction(4, 4)), backendName) {
+        (c) => {
+          new StreamingWrapperTests(c, Util.arrToBits(Array(6, 0, 0, 0, 2, 4, 6, 8, 0, 255, 6, 0, 0, 0, 1, 2, 8, 2, 8, 0), 8),
+            Util.arrToBits(Array(2), 32))
+        }
+      }
     }
   )
   def main(args: Array[String]): Unit = {
