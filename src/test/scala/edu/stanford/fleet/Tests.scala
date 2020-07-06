@@ -14,7 +14,7 @@ object Tests {
         (coreId: Int) => new Summer(8)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(0, 2, 10, 10), 32),
-            Util.arrToBits(Array(20, 0, 0, 0), 8))
+            Util.arrToBits(Array(20), 32))
         }
       }
     },
@@ -66,7 +66,7 @@ object Tests {
     },
     "KNN1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,
-        (coreId: Int) => new KNNInternal(3, 2, 2)), backendName) {
+        (coreId: Int) => new KNN(3, 2, 2)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(4, 0, 0, 0, 1, 6, 0, 0, 2, 0, 4, 0), 32),
             Util.arrToBits(Array(0, 0, 1, 4, 2, 16, 0, 1, 1, 5, 2, 17), 32))
@@ -75,7 +75,7 @@ object Tests {
     },
     "TSPrediction1" -> { (backendName: String) =>
       Driver(() => new StreamingWrapper(0, 1000000000, 1,
-        (coreId: Int) => new TSPredictionInternal(4, 4)), backendName) {
+        (coreId: Int) => new TSPrediction(4, 4)), backendName) {
         (c) => {
           new StreamingWrapperTests(c, Util.arrToBits(Array(6, 0, 0, 0, 2, 4, 6, 8, 0, 255, 6, 0, 0, 0, 1, 2, 8, 2, 8, 0), 8),
             Util.arrToBits(Array(2), 32))
