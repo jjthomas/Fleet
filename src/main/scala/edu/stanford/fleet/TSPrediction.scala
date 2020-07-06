@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 
 // Predicts whether next element is positive (highest order bit is 1) based on previous `numWordsPerPred` elements.
-class TSPrediction(wordSize: Int, numWordsPerPred: Int) extends ProcessingUnit(8, 32) {
+class TSPredictionInternal(wordSize: Int, numWordsPerPred: Int) extends ProcessingUnit(8, 32) {
   val loadingCoeffs :: loadingFunc :: mainLoop :: emittingResult :: finished :: Nil = Enum(5)
   val state = RegInit(loadingCoeffs)
 
@@ -88,6 +88,11 @@ class TSPrediction(wordSize: Int, numWordsPerPred: Int) extends ProcessingUnit(8
   io.outputWord := correctCount
   io.outputValid := state === emittingResult
   io.outputFinished := state === finished
+}
+
+class TSPrediction(wordSize: Int, numWordsPerPred: Int) extends ProcessingUnit(8, 8) {
+  val tsPredInternal = Module(new TSPredictionInternal(wordSize, numWordsPerPred))
+  Util.addOutputReducer(tsPredInternal.io, io)
 }
 
 object TSPrediction extends App {

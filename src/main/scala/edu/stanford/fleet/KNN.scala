@@ -3,7 +3,7 @@ package edu.stanford.fleet
 import chisel3._
 import chisel3.util._
 
-class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 32) {
+class KNNInternal(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 32) {
   val loadingVectors :: mainComparisons :: emittingNeighbors :: finished :: Nil = Enum(4)
   val state = RegInit(loadingVectors)
 
@@ -114,6 +114,11 @@ class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 3
   io.outputWord := Mux(emittingDistance, topDists(0)(0), topIds(0)(0))
   io.outputValid := state === emittingNeighbors
   io.outputFinished := state === finished
+}
+
+class KNN(k: Int, numVectors: Int, vectorSize: Int) extends ProcessingUnit(32, 8) {
+  val knnInternal = Module(new KNNInternal(k, numVectors, vectorSize))
+  Util.addOutputReducer(knnInternal.io, io)
 }
 
 object KNN extends App {

@@ -3,7 +3,7 @@ package edu.stanford.fleet
 import chisel3._
 import chisel3.core.Bundle
 
-class ProcessingUnitIO(inputWordSize: Int, outputWordSize: Int) extends Bundle {
+class ProcessingUnitIO(val inputWordSize: Int, val outputWordSize: Int) extends Bundle {
   val inputWord = Input(UInt(inputWordSize.W))
   val inputValid = Input(Bool())
   val inputFinished = Input(Bool()) // asserted on all cycles after the last valid input word

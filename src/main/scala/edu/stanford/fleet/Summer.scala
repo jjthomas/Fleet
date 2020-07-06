@@ -24,19 +24,5 @@ class SummerInternal extends ProcessingUnit(32, 32) {
 // Wraps SummerInternal to reduce output bus bitwidth if desired
 class Summer(outputWordSize: Int) extends ProcessingUnit(32, outputWordSize) {
   val summerInternal = Module(new SummerInternal)
-  val outputReducer = Module(new OutputWidthReducer(32, outputWordSize))
-
-  summerInternal.io.inputWord := io.inputWord
-  summerInternal.io.inputValid := io.inputValid
-  summerInternal.io.inputFinished := io.inputFinished
-
-  outputReducer.io.inputWord := summerInternal.io.outputWord
-  outputReducer.io.inputValid := summerInternal.io.outputValid
-  outputReducer.io.inputFinished := summerInternal.io.outputFinished
-  summerInternal.io.outputReady := outputReducer.io.inputReady
-
-  io.outputWord := outputReducer.io.outputWord
-  io.outputValid := outputReducer.io.outputValid
-  io.outputFinished := outputReducer.io.outputFinished
-  outputReducer.io.outputReady := io.outputReady
+  Util.addOutputReducer(summerInternal.io, io)
 }

@@ -1,6 +1,7 @@
 package edu.stanford.fleet
 
 import scala.collection.mutable.ArrayBuffer
+import chisel3._
 
 object Util {
   def arrToBits(arr: Array[Int], bitsPerElement: Int): (Int, BigInt) = {
@@ -32,5 +33,23 @@ object Util {
 
   def bitsToBinaryString(numBits: Int, bits: BigInt): String = {
     String.valueOf((0 until numBits - math.max(bits.bitLength, 1)).map(_ => '0').toArray) + bits.toString(2)
+  }
+
+  def addOutputReducer(innerIO: ProcessingUnitIO, topIO: ProcessingUnitIO) = {
+    val outputReducer = Module(new OutputWidthReducer(innerIO.outputWordSize, topIO.outputWordSize))
+
+    innerIO.inputWord := topIO.inputWord
+    innerIO.inputValid := topIO.inputValid
+    innerIO.inputFinished := topIO.inputFinished
+
+    outputReducer.io.inputWord := innerIO.outputWord
+    outputReducer.io.inputValid := innerIO.outputValid
+    outputReducer.io.inputFinished := innerIO.outputFinished
+    innerIO.outputReady := outputReducer.io.inputReady
+
+    topIO.outputWord := outputReducer.io.outputWord
+    topIO.outputValid := outputReducer.io.outputValid
+    topIO.outputFinished := outputReducer.io.outputFinished
+    outputReducer.io.outputReady := topIO.outputReady
   }
 }
