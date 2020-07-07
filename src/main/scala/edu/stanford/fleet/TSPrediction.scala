@@ -14,7 +14,7 @@ class TSPredictionInternal(wordSize: Int, numWordsPerPred: Int) extends Processi
   }
   val loadingCoeffCounter = RegInit(0.U(log2Ceil(numWordsPerPred).W))
 
-  val funcSize = math.pow(2, numWordsPerPred).toInt // in bits
+  val funcSize = 1 << numWordsPerPred // in bits
   val func = Reg(Vec(funcSize, Bool()))
   val loadingFuncCounter = RegInit(0.U(math.max(numWordsPerPred - 3, 1).W))
 
