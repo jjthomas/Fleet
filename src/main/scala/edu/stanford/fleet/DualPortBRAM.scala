@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.core.Bundle
 
 // a is read port, b is write port
-class DualPortBRAM(dataWidth: Int, addrWidth: Int)  extends Module {
+class DualPortBRAM(dataWidth: Int, addrWidth: Int) extends Module {
   val io = IO(new Bundle {
     val a_addr = Input(UInt(addrWidth.W))
     val a_dout = Output(UInt(dataWidth.W))
