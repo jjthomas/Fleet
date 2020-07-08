@@ -73,3 +73,7 @@ class Counter(numEntries: Int) extends ProcessingUnit(8, 8) {
   }
   io.outputFinished := outputDone
 }
+
+object Counter extends App {
+  chisel3.Driver.execute(args, () => new Counter(args(0).toInt))
+}
