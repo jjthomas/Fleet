@@ -476,26 +476,49 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int) extends Modu
   }
 }
 
-class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
-                       numCores: Int, numMiddleArbiters: Int, puFactory: (Int) => AddrProcessingUnitIO) extends Module {
-  val io = IO(new AXI(axiBusWidth))
+class MemoryController(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
+                       numCores: Int, numMiddleArbiters: Int) extends Module {
+  val io = IO(new Bundle {
+    val cores = Vec(numCores, Flipped(new CoreIOBufferIO(coreTransferSize, coreAddrWidth)))
+    val external = new AXI(axiBusWidth)
+  })
 
   val coresPerMiddleArbiter = numCores / numMiddleArbiters
   val remainder = numCores % numMiddleArbiters
   val topArbiter = Module(new TopArbiter(axiBusWidth, lineBits, numMiddleArbiters))
   var curCoreIdx = 0
   for (i <- 0 until numMiddleArbiters) {
-    val coresForArb = if (numMiddleArbiters - i <= remainder) coresPerMiddleArbiter + 1 else coresPerMiddleArbiter
+    val coresForArb = if (i < remainder) coresPerMiddleArbiter + 1 else coresPerMiddleArbiter
     val arb = Module(new MiddleArbiter(axiBusWidth, lineBits, coreTransferSize, coreAddrWidth, coresForArb))
     for (j <- 0 until coresForArb) {
-      val ioBuffer = Module(new CoreIOBuffer(lineBits, coreTransferSize, coreAddrWidth))
-      ioBuffer.io.core <> puFactory(curCoreIdx + j)
-      arb.io.cores(j) <> ioBuffer.io.external
+      arb.io.cores(j) <> io.cores(curCoreIdx)
+      curCoreIdx += 1
     }
     topArbiter.io.children(i) <> arb.io.external
-    curCoreIdx += coresForArb
   }
-  io <> topArbiter.io.external
+  io.external <> topArbiter.io.external
+}
+
+class Core(lineBits: Int, transferSize: Int, addrWidth: Int, coreId: Int,
+           puFactory: (Int) => AddrProcessingUnitIO) extends Module {
+  val io = IO(new CoreIOBufferIO(transferSize, addrWidth))
+
+  val ioBuffer = Module(new CoreIOBuffer(lineBits, transferSize, addrWidth))
+  ioBuffer.io.core <> puFactory(coreId)
+  io <> ioBuffer.io.external
+}
+
+class StreamingWrapper(axiBusWidth: Int, lineBits: Int, coreTransferSize: Int, coreAddrWidth: Int,
+                       numCores: Int, numMiddleArbiters: Int, puFactory: (Int) => AddrProcessingUnitIO) extends Module {
+  val io = IO(new AXI(axiBusWidth))
+
+  val mc = Module(new MemoryController(axiBusWidth, lineBits, coreTransferSize, coreAddrWidth,
+    numCores, numMiddleArbiters))
+  for (i <- 0 until numCores) {
+    val core = Module(new Core(lineBits, coreTransferSize, coreAddrWidth, i, puFactory))
+    mc.io.cores(i) <> core.io
+  }
+  io <> mc.io.external
 }
 
 object StreamingWrapperDriver extends App {
