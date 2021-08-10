@@ -1,12 +1,15 @@
 package edu.stanford.fleet
 
 import chisel3._
+import chisel3.core.{ActualDirection, DataMirror}
 import chisel3.util._
 import edu.stanford.fleet.apps._
 
 object Constants {
   val MAX_CORES = 4096
   val CORE_ID_BITS = util.log2Ceil(MAX_CORES)
+  val MID_REGS = 1
+  val TOP_REGS = 0
 }
 
 class AddrProcessingUnitIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
@@ -82,9 +85,10 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   // TODO this is getting incorrectly synthesized to a BRAM; attribute (* rw_addr_collision= "yes" *) may solve
   val inputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val fetchingInput = RegInit(false.B)
+  val sendingInputAddr = RegInit(false.B)
   val inputTransferCounter = RegInit(0.U(util.log2Ceil(lineBits / transferSize).W))
 
-  io.external.inputAddrValid := fetchingInput
+  io.external.inputAddrValid := sendingInputAddr
   io.external.inputAddr := roundDownToLine(inputAddr)
   when (io.external.inputValid) {
     inputBuffer.write(inputTransferCounter, io.external.inputTransfer)
@@ -96,6 +100,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
     } .otherwise {
       inputTransferCounter := inputTransferCounter + 1.U
     }
+    sendingInputAddr := false.B
   }
 
   when (io.core.inputAddrValid) {
@@ -105,6 +110,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   io.core.inputValid := storedInputLine === lineFromAddr(inputAddr) && hasStoredInputLine
   when (io.core.inputReady && !io.core.inputValid && !fetchingInput) {
     fetchingInput := true.B
+    sendingInputAddr := true.B
   }
   val curInput = WireInit(inputBuffer.read(idxFromAddr(inputAddr)))
   io.core.inputTransfer :=
@@ -119,6 +125,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   val outputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val outputStrb = RegInit(VecInit(Seq.fill(lineBits / transferSize)(0.U((transferSize / 8).W))))
   val sendingOutput = RegInit(false.B)
+  val sendingOutputAddr = RegInit(false.B)
   val outputTransferCounter = RegInit(0.U(util.log2Ceil(lineBits / transferSize).W))
   val barrierRequested = RegInit(false.B)
   val sendBarrier = RegInit(false.B)
@@ -127,11 +134,11 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
 
   val curOutput = WireInit(outputBuffer.read(Mux(sendingOutput, outputTransferCounter, idxFromAddr(outputAddr))))
 
-  io.external.outputAddrValid := sendingOutput
+  io.external.outputAddrValid := sendingOutputAddr
   io.external.outputAddr := padLine(storedOutputLine)
   io.external.outputTransfer := curOutput
   io.external.outputStrobe := outputStrb(outputTransferCounter)
-  when (io.external.outputReady) {
+  when (io.external.outputReady && sendingOutput) {
     when (outputTransferCounter === (lineBits / transferSize - 1).U) {
       storedOutputLine := lineFromAddr(outputAddr)
       sendingOutput := false.B
@@ -150,6 +157,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
     } .otherwise {
       outputTransferCounter := outputTransferCounter + 1.U
     }
+    sendingOutputAddr := false.B
   }
 
   when (io.core.outputAddrValid) {
@@ -163,6 +171,7 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   when (hasStoredOutputLine && ((io.core.outputValid && !io.core.outputReady) || barrierRequested || finishRequested) &&
     !sendingOutput) {
     sendingOutput := true.B
+    sendingOutputAddr := true.B
   }
   when (io.core.outputValid && io.core.outputReady) {
     outputAddr := outputAddr + (1.U << io.core.lgOutputNumBytes).asUInt()
@@ -236,12 +245,42 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
     val external = new MiddleArbiterIO(axiBusWidth)
   })
 
-  for (i <- 0 until numCores) {
-    io.cores(i).barrierCleared := io.external.barrierCleared
-    io.cores(i).coreId := io.external.firstCoreId + i.U
+  // Assuming core inputAddrValid turns false one cycle after first input transfer comes through,
+  // we have a number of cycles equal to the remaining number of transfers (lineBits / transferSize - 1)
+  // to pass through the forward and backward direction registers.
+  // This condition is also strong enough for the outputAddrValid bus, which has even more cycles to turn
+  // false since outputReady is not registered.
+  assert(lineBits / transferSize - 1 >= 2 * Constants.MID_REGS)
+  val cores = Wire(chiselTypeOf(io.cores))
+  for (i <- 0 until cores.length) {
+    for ((name, data) <- cores(i).elements) {
+      if (DataMirror.directionOf(data) == ActualDirection.Input) {
+        if (chiselTypeOf(data).getClass == chiselTypeOf(io.cores(0).inputValid).getClass) { // Bool TODO hacky
+          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS, false.B,
+            if (name == "outputAddrValid") cores(i).elements("outputReady").asUInt().asBool() else true.B)
+        } else {
+          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS,
+            if (name == "outputTransfer" || name == "outputAddr" || name == "outputStrobe")
+              cores(i).elements("outputReady").asUInt().asBool() else true.B)
+        }
+      } else {
+        if (name == "outputReady") {
+          io.cores(i).elements(name) := cores(i).elements(name)
+        } else if (chiselTypeOf(data).getClass == chiselTypeOf(io.cores(0).inputValid).getClass) { // Bool
+          io.cores(i).elements(name) := ShiftRegister(cores(i).elements(name), Constants.MID_REGS, false.B, true.B)
+        } else {
+          io.cores(i).elements(name) := ShiftRegister(cores(i).elements(name), Constants.MID_REGS)
+        }
+      }
+    }
   }
-  io.external.barrierRequest := RegNext(io.cores.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B)
-  io.external.finished := RegNext(io.cores.map(_.finished).foldLeft(true.B)(_ && _), false.B)
+
+  for (i <- 0 until numCores) {
+    cores(i).barrierCleared := io.external.barrierCleared
+    cores(i).coreId := io.external.firstCoreId + i.U
+  }
+  io.external.barrierRequest := RegNext(cores.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B)
+  io.external.finished := RegNext(cores.map(_.finished).foldLeft(true.B)(_ && _), false.B)
 
   val coreSelecting :: addressReading :: dataFetching :: dataFlushing :: Nil = util.Enum(4)
 
@@ -257,11 +296,11 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
     io.external.inputMemAddrValid := inputState === dataFetching
 
     for (i <- 0 until numCores) {
-      io.cores(i).inputTransfer := inputData(transferSize - 1, 0)
-      io.cores(i).inputValid := (inputState === dataFlushing) && (inputCore === i.U)
+      cores(i).inputTransfer := inputData(transferSize - 1, 0)
+      cores(i).inputValid := (inputState === dataFlushing) && (inputCore === i.U)
     }
 
-    val coreInputAddrValids = io.cores.map(_.inputAddrValid)
+    val coreInputAddrValids = cores.map(_.inputAddrValid)
     val someInputAddrValid = VecInit(coreInputAddrValids).asUInt() =/= 0.U
     val selectedInputCore = util.PriorityEncoder(coreInputAddrValids)
     switch(inputState) {
@@ -272,7 +311,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
         }
       }
       is(addressReading) {
-        inputAddr := io.cores(inputCore).inputAddr
+        inputAddr := cores(inputCore).inputAddr
         inputState := dataFetching
       }
       is(dataFetching) {
@@ -312,10 +351,10 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   io.external.outputMemStrb := outputStrb(axiBusWidth / 8 - 1, 0)
 
   for (i <- 0 until numCores) {
-    io.cores(i).outputReady := (outputState === dataFetching) && (outputCore === i.U)
+    cores(i).outputReady := !cores(i).outputAddrValid || ((outputState === dataFetching) && (outputCore === i.U))
   }
 
-  val coreOutputAddrValids = io.cores.map(_.outputAddrValid)
+  val coreOutputAddrValids = cores.map(_.outputAddrValid)
   val someOutputAddrValid = VecInit(coreOutputAddrValids).asUInt() =/= 0.U
   val selectedOutputCore = util.PriorityEncoder(coreOutputAddrValids)
   switch(outputState) {
@@ -326,12 +365,12 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
       }
     }
     is(addressReading) {
-      outputAddr := io.cores(outputCore).outputAddr
+      outputAddr := cores(outputCore).outputAddr
       outputState := dataFetching
     }
     is(dataFetching) {
-      outputData := io.cores(outputCore).outputTransfer ## outputData(lineBits - 1, transferSize)
-      outputStrb := io.cores(outputCore).outputStrobe ## outputStrb(lineBits / 8 - 1, transferSize / 8)
+      outputData := cores(outputCore).outputTransfer ## outputData(lineBits - 1, transferSize)
+      outputStrb := cores(outputCore).outputStrobe ## outputStrb(lineBits / 8 - 1, transferSize / 8)
       when(outputFetchCounter === (lineBits / transferSize - 1).U) {
         outputFetchCounter := 0.U
         outputState := dataFlushing

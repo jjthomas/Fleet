@@ -2,7 +2,7 @@ package edu.stanford.fleet.apps
 
 import chisel3._
 import chisel3.util._
-import edu.stanford.fleet.AddrProcessingUnitIO
+import edu.stanford.fleet.{AddrProcessingUnitIO, Constants}
 
 class AddrPassThrough(transferSize: Int, addrWidth: Int, readAddr: Int, writeAddr: Int, numBytes: Int,
                       wordBytes: Int) extends Module {
@@ -10,12 +10,15 @@ class AddrPassThrough(transferSize: Int, addrWidth: Int, readAddr: Int, writeAdd
 
   val bytesCopied = RegInit(0.U(log2Ceil(numBytes + 1).W))
   val firstCycle = RegInit(true.B)
-  firstCycle := false.B
+  val idReady = ShiftRegister(true.B, Constants.MID_REGS + Constants.TOP_REGS, false.B, true.B)
+  when (idReady && firstCycle) {
+    firstCycle := false.B
+  }
 
   io.barrierRequest := false.B
 
   io.inputAddr := readAddr.U + io.coreId * numBytes.U
-  io.inputAddrValid := firstCycle
+  io.inputAddrValid := firstCycle && idReady
   io.outputAddr := writeAddr.U + io.coreId * numBytes.U
   io.outputAddrValid := firstCycle
 
