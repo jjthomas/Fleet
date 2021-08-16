@@ -9,7 +9,7 @@ object Constants {
   val MAX_CORES = 4096
   val CORE_ID_BITS = util.log2Ceil(MAX_CORES)
   val MID_REGS = 1
-  val TOP_REGS = 0
+  val TOP_REGS = 1
 }
 
 class AddrProcessingUnitIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
@@ -290,10 +290,11 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
     val inputFetchCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
     val inputFlushCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
     val inputAddr = Reg(UInt(addrWidth.W))
+    val inputAddrValid = RegInit(false.B)
     val inputData = Reg(UInt(lineBits.W))
 
     io.external.inputMemAddr := inputAddr
-    io.external.inputMemAddrValid := inputState === dataFetching
+    io.external.inputMemAddrValid := inputAddrValid
 
     for (i <- 0 until numCores) {
       cores(i).inputTransfer := inputData(transferSize - 1, 0)
@@ -313,9 +314,11 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
       is(addressReading) {
         inputAddr := cores(inputCore).inputAddr
         inputState := dataFetching
+        inputAddrValid := true.B
       }
       is(dataFetching) {
         when(io.external.inputMemBlockValid) {
+          inputAddrValid := false.B
           inputData := io.external.inputMemBlock ## inputData(lineBits - 1, axiBusWidth)
           when(inputFetchCounter === (lineBits / axiBusWidth - 1).U) {
             inputFetchCounter := 0.U
@@ -342,11 +345,12 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   val outputFetchCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
   val outputFlushCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
   val outputAddr = Reg(UInt(addrWidth.W))
+  val outputAddrValid = RegInit(false.B)
   val outputData = Reg(UInt(lineBits.W))
   val outputStrb = Reg(UInt((lineBits / 8).W))
 
   io.external.outputMemAddr := outputAddr
-  io.external.outputMemAddrValid := outputState === dataFlushing
+  io.external.outputMemAddrValid := outputAddrValid
   io.external.outputMemBlock := outputData(axiBusWidth - 1, 0)
   io.external.outputMemStrb := outputStrb(axiBusWidth / 8 - 1, 0)
 
@@ -374,6 +378,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
       when(outputFetchCounter === (lineBits / transferSize - 1).U) {
         outputFetchCounter := 0.U
         outputState := dataFlushing
+        outputAddrValid := true.B
       }.otherwise {
         outputFetchCounter := outputFetchCounter + 1.U
       }
@@ -388,6 +393,7 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
         }.otherwise {
           outputFlushCounter := outputFlushCounter + 1.U
         }
+        outputAddrValid := false.B
       }
     }
   }
@@ -420,14 +426,39 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
     val external = new AXI(axiBusWidth)
   })
 
-  val barrierCleared = WireInit(RegNext(io.children.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B))
+  val children = Wire(chiselTypeOf(io.children))
+  for (i <- 0 until children.length) {
+    for ((name, data) <- children(i).elements) {
+      if (DataMirror.directionOf(data) == ActualDirection.Input) {
+        if (chiselTypeOf(data).getClass == chiselTypeOf(io.children(0).inputMemBlockValid).getClass) { // Bool TODO hack
+          children(i).elements(name) := ShiftRegister(io.children(i).elements(name), Constants.TOP_REGS, false.B,
+            if (name == "outputMemAddrValid") children(i).elements("outputMemBlockReady").asUInt().asBool() else true.B)
+        } else {
+          children(i).elements(name) := ShiftRegister(io.children(i).elements(name), Constants.TOP_REGS,
+            if (name == "outputMemBlock" || name == "outputMemAddr" || name == "outputMemStrb")
+              children(i).elements("outputMemBlockReady").asUInt().asBool() else true.B)
+        }
+      } else {
+        if (name == "outputMemBlockReady") {
+          io.children(i).elements(name) := children(i).elements(name)
+        } else if (chiselTypeOf(data).getClass == chiselTypeOf(io.children(0).inputMemBlockValid).getClass) { // Bool
+          io.children(i).elements(name) := ShiftRegister(children(i).elements(name), Constants.TOP_REGS, false.B,
+            true.B)
+        } else {
+          io.children(i).elements(name) := ShiftRegister(children(i).elements(name), Constants.TOP_REGS)
+        }
+      }
+    }
+  }
+
+  val barrierCleared = WireInit(RegNext(children.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B))
   var curCore = 0
   for (i <- 0 until numChildren) {
-    io.children(i).barrierCleared := barrierCleared
-    io.children(i).firstCoreId := curCore.U
+    children(i).barrierCleared := barrierCleared
+    children(i).firstCoreId := curCore.U
     curCore += coresForArb(i)
   }
-  io.external.finished := RegNext(io.children.map(_.finished).foldLeft(true.B)(_ && _), false.B)
+  io.external.finished := RegNext(children.map(_.finished).foldLeft(true.B)(_ && _), false.B)
 
   io.external.inputMemAddrLen := (lineBits / axiBusWidth - 1).U
   io.external.outputMemAddrLen := (lineBits / axiBusWidth - 1).U
@@ -437,11 +468,17 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
     val inputAddrPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
     val inputDataPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
     val inputDataCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
+    // inputAddrValid turns false one cycle after the first input transfer, and we need
+    // 2 * Constants.TOP_REGS cycles for this to propagate through, so we may need some extra
+    // waiting after the last transfer.
+    val extraTransferCycles = Math.max(0, 2 * Constants.TOP_REGS - (lineBits / axiBusWidth - 1))
+    val transferWaitCounters = RegInit(VecInit(Seq.fill(numChildren)(0.U(
+      Math.max(1, log2Ceil(extraTransferCycles + 1)).W))))
 
-    io.external.inputMemAddr := io.children(inputAddrPtr).inputMemAddr
-    io.external.inputMemAddrValid := io.children(inputAddrPtr).inputMemAddrValid && !inputReqInFlight(inputAddrPtr)
+    io.external.inputMemAddr := children(inputAddrPtr).inputMemAddr
+    io.external.inputMemAddrValid := children(inputAddrPtr).inputMemAddrValid && !inputReqInFlight(inputAddrPtr)
 
-    when(!io.children(inputAddrPtr).inputMemAddrValid || // if !inputMemAddrValid then !inputReqInFlight
+    when(!children(inputAddrPtr).inputMemAddrValid || // if !inputMemAddrValid then !inputReqInFlight
       (io.external.inputMemAddrValid && io.external.inputMemAddrReady)) {
       when(inputAddrPtr === (numChildren - 1).U) {
         inputAddrPtr := 0.U
@@ -455,8 +492,8 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
 
     io.external.inputMemBlockReady := inputReqInFlight(inputDataPtr)
     for (i <- 0 until numChildren) {
-      io.children(i).inputMemBlock := io.external.inputMemBlock
-      io.children(i).inputMemBlockValid := io.external.inputMemBlockValid && io.external.inputMemBlockReady &&
+      children(i).inputMemBlock := io.external.inputMemBlock
+      children(i).inputMemBlockValid := io.external.inputMemBlockValid && io.external.inputMemBlockReady &&
         inputDataPtr === i.U
     }
 
@@ -471,9 +508,23 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
     when(io.external.inputMemBlockValid && io.external.inputMemBlockReady) {
       when(inputDataCounter === (lineBits / axiBusWidth - 1).U) {
         inputDataCounter := 0.U
-        inputReqInFlight(inputDataPtr) := false.B
+        if (extraTransferCycles > 0) {
+          transferWaitCounters(inputDataPtr) := extraTransferCycles.U
+        } else {
+          inputReqInFlight(inputDataPtr) := false.B
+        }
       }.otherwise {
         inputDataCounter := inputDataCounter + 1.U
+      }
+    }
+    if (extraTransferCycles > 0) {
+      for (i <- 0 until numChildren) {
+        when(transferWaitCounters(i) > 0.U) {
+          when(transferWaitCounters(i) === 1.U) {
+            inputReqInFlight(i) := false.B
+          }
+          transferWaitCounters(i) := transferWaitCounters(i) - 1.U
+        }
       }
     }
   }
@@ -484,11 +535,11 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
   val outputDataPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
   val outputDataCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
 
-  io.external.outputMemAddr := io.children(outputAddrPtr).outputMemAddr
-  io.external.outputMemAddrValid := io.children(outputAddrPtr).outputMemAddrValid && !outputReqInFlight(outputAddrPtr)
+  io.external.outputMemAddr := children(outputAddrPtr).outputMemAddr
+  io.external.outputMemAddrValid := children(outputAddrPtr).outputMemAddrValid && !outputReqInFlight(outputAddrPtr)
   io.external.outputMemAddrId := outputAddrId
 
-  when (!io.children(outputAddrPtr).outputMemAddrValid || // if !outputMemAddrValid then !outputReqInFlight
+  when (!children(outputAddrPtr).outputMemAddrValid || // if !outputMemAddrValid then !outputReqInFlight
     (io.external.outputMemAddrValid && io.external.outputMemAddrReady)) {
     when (outputAddrPtr === (numChildren - 1).U) {
       outputAddrPtr := 0.U
@@ -502,12 +553,12 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
   }
 
   io.external.outputMemBlockValid := outputReqInFlight(outputDataPtr)
-  io.external.outputMemBlock := io.children(outputDataPtr).outputMemBlock
-  io.external.outputMemStrb := io.children(outputDataPtr).outputMemStrb
+  io.external.outputMemBlock := children(outputDataPtr).outputMemBlock
+  io.external.outputMemStrb := children(outputDataPtr).outputMemStrb
   io.external.outputMemBlockLast := outputDataCounter === (lineBits / axiBusWidth - 1).U
   for (i <- 0 until numChildren) {
-    io.children(i).outputMemBlockReady := io.external.outputMemBlockValid && io.external.outputMemBlockReady &&
-      outputDataPtr === i.U
+    children(i).outputMemBlockReady := !children(i).outputMemAddrValid || (io.external.outputMemBlockValid &&
+      io.external.outputMemBlockReady && outputDataPtr === i.U)
   }
 
   when (!outputReqInFlight(outputDataPtr) || (io.external.outputMemBlockValid && io.external.outputMemBlockReady &&
