@@ -10,6 +10,7 @@ object Constants {
   val CORE_ID_BITS = util.log2Ceil(MAX_CORES)
   val MID_REGS = 1
   val TOP_REGS = 1
+  val OUTPUT_BUFFER_SIZE = 2
 }
 
 class AddrProcessingUnitIO(val transferSize: Int, val addrWidth: Int) extends Bundle {
@@ -125,7 +126,6 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   val outputBuffer = Mem(lineBits / transferSize, UInt(transferSize.W))
   val outputStrb = RegInit(VecInit(Seq.fill(lineBits / transferSize)(0.U((transferSize / 8).W))))
   val sendingOutput = RegInit(false.B)
-  val sendingOutputAddr = RegInit(false.B)
   val outputTransferCounter = RegInit(0.U(util.log2Ceil(lineBits / transferSize).W))
   val barrierRequested = RegInit(false.B)
   val sendBarrier = RegInit(false.B)
@@ -134,11 +134,11 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
 
   val curOutput = WireInit(outputBuffer.read(Mux(sendingOutput, outputTransferCounter, idxFromAddr(outputAddr))))
 
-  io.external.outputAddrValid := sendingOutputAddr
+  io.external.outputAddrValid := sendingOutput
   io.external.outputAddr := padLine(storedOutputLine)
   io.external.outputTransfer := curOutput
   io.external.outputStrobe := outputStrb(outputTransferCounter)
-  when (io.external.outputReady && sendingOutput) {
+  when (io.external.outputReady) {
     when (outputTransferCounter === (lineBits / transferSize - 1).U) {
       storedOutputLine := lineFromAddr(outputAddr)
       sendingOutput := false.B
@@ -157,7 +157,6 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
     } .otherwise {
       outputTransferCounter := outputTransferCounter + 1.U
     }
-    sendingOutputAddr := false.B
   }
 
   when (io.core.outputAddrValid) {
@@ -171,7 +170,6 @@ class CoreIOBuffer(lineBits: Int, transferSize: Int, addrWidth: Int) extends Mod
   when (hasStoredOutputLine && ((io.core.outputValid && !io.core.outputReady) || barrierRequested || finishRequested) &&
     !sendingOutput) {
     sendingOutput := true.B
-    sendingOutputAddr := true.B
   }
   when (io.core.outputValid && io.core.outputReady) {
     outputAddr := outputAddr + (1.U << io.core.lgOutputNumBytes).asUInt()
@@ -248,25 +246,18 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   // Assuming core inputAddrValid turns false one cycle after first input transfer comes through,
   // we have a number of cycles equal to the remaining number of transfers (lineBits / transferSize - 1)
   // to pass through the forward and backward direction registers.
-  // This condition is also strong enough for the outputAddrValid bus, which has even more cycles to turn
-  // false since outputReady is not registered.
   assert(lineBits / transferSize - 1 >= 2 * Constants.MID_REGS)
   val cores = Wire(chiselTypeOf(io.cores))
   for (i <- 0 until cores.length) {
     for ((name, data) <- cores(i).elements) {
       if (DataMirror.directionOf(data) == ActualDirection.Input) {
         if (chiselTypeOf(data).getClass == chiselTypeOf(io.cores(0).inputValid).getClass) { // Bool TODO hacky
-          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS, false.B,
-            if (name == "outputAddrValid") cores(i).elements("outputReady").asUInt().asBool() else true.B)
+          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS, false.B, true.B)
         } else {
-          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS,
-            if (name == "outputTransfer" || name == "outputAddr" || name == "outputStrobe")
-              cores(i).elements("outputReady").asUInt().asBool() else true.B)
+          cores(i).elements(name) := ShiftRegister(io.cores(i).elements(name), Constants.MID_REGS)
         }
       } else {
-        if (name == "outputReady") {
-          io.cores(i).elements(name) := cores(i).elements(name)
-        } else if (chiselTypeOf(data).getClass == chiselTypeOf(io.cores(0).inputValid).getClass) { // Bool
+        if (chiselTypeOf(data).getClass == chiselTypeOf(io.cores(0).inputValid).getClass) { // Bool
           io.cores(i).elements(name) := ShiftRegister(cores(i).elements(name), Constants.MID_REGS, false.B, true.B)
         } else {
           io.cores(i).elements(name) := ShiftRegister(cores(i).elements(name), Constants.MID_REGS)
@@ -280,7 +271,6 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
     cores(i).coreId := io.external.firstCoreId + i.U
   }
   io.external.barrierRequest := RegNext(cores.map(_.barrierRequest).foldLeft(true.B)(_ && _), false.B)
-  io.external.finished := RegNext(cores.map(_.finished).foldLeft(true.B)(_ && _), false.B)
 
   val coreSelecting :: addressReading :: dataFetching :: dataFlushing :: Nil = util.Enum(4)
 
@@ -345,17 +335,17 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
   val outputFetchCounter = RegInit(0.U(log2Ceil(lineBits / transferSize).W))
   val outputFlushCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
   val outputAddr = Reg(UInt(addrWidth.W))
-  val outputAddrValid = RegInit(false.B)
   val outputData = Reg(UInt(lineBits.W))
   val outputStrb = Reg(UInt((lineBits / 8).W))
+  val outputWait = RegInit(0.U(math.max(1, log2Ceil(2 * Constants.MID_REGS + 1)).W))
 
   io.external.outputMemAddr := outputAddr
-  io.external.outputMemAddrValid := outputAddrValid
+  io.external.outputMemAddrValid := outputState === dataFlushing
   io.external.outputMemBlock := outputData(axiBusWidth - 1, 0)
   io.external.outputMemStrb := outputStrb(axiBusWidth / 8 - 1, 0)
 
   for (i <- 0 until numCores) {
-    cores(i).outputReady := !cores(i).outputAddrValid || ((outputState === dataFetching) && (outputCore === i.U))
+    cores(i).outputReady := (outputState === dataFetching) && (outputCore === i.U)
   }
 
   val coreOutputAddrValids = cores.map(_.outputAddrValid)
@@ -373,14 +363,18 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
       outputState := dataFetching
     }
     is(dataFetching) {
-      outputData := cores(outputCore).outputTransfer ## outputData(lineBits - 1, transferSize)
-      outputStrb := cores(outputCore).outputStrobe ## outputStrb(lineBits / 8 - 1, transferSize / 8)
-      when(outputFetchCounter === (lineBits / transferSize - 1).U) {
-        outputFetchCounter := 0.U
-        outputState := dataFlushing
-        outputAddrValid := true.B
-      }.otherwise {
-        outputFetchCounter := outputFetchCounter + 1.U
+      when (outputWait === (2 * Constants.MID_REGS).U) { // wait for ready signal to propagate through regs
+        outputData := cores(outputCore).outputTransfer ## outputData(lineBits - 1, transferSize)
+        outputStrb := cores(outputCore).outputStrobe ## outputStrb(lineBits / 8 - 1, transferSize / 8)
+        when(outputFetchCounter === (lineBits / transferSize - 1).U) {
+          outputFetchCounter := 0.U
+          outputWait := 0.U
+          outputState := dataFlushing
+        }.otherwise {
+          outputFetchCounter := outputFetchCounter + 1.U
+        }
+      } .otherwise {
+        outputWait := outputWait + 1.U
       }
     }
     is(dataFlushing) {
@@ -393,10 +387,11 @@ class MiddleArbiter(axiBusWidth: Int, lineBits: Int, transferSize: Int, addrWidt
         }.otherwise {
           outputFlushCounter := outputFlushCounter + 1.U
         }
-        outputAddrValid := false.B
       }
     }
   }
+  io.external.finished := RegNext(cores.map(_.finished).foldLeft(true.B)(_ && _) &&
+    outputState === coreSelecting, false.B)
 }
 
 class AXI(val busWidth: Int) extends Bundle {
@@ -432,16 +427,12 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
       if (DataMirror.directionOf(data) == ActualDirection.Input) {
         if (chiselTypeOf(data).getClass == chiselTypeOf(io.children(0).inputMemBlockValid).getClass) { // Bool TODO hack
           children(i).elements(name) := ShiftRegister(io.children(i).elements(name), Constants.TOP_REGS, false.B,
-            if (name == "outputMemAddrValid") children(i).elements("outputMemBlockReady").asUInt().asBool() else true.B)
+            true.B)
         } else {
-          children(i).elements(name) := ShiftRegister(io.children(i).elements(name), Constants.TOP_REGS,
-            if (name == "outputMemBlock" || name == "outputMemAddr" || name == "outputMemStrb")
-              children(i).elements("outputMemBlockReady").asUInt().asBool() else true.B)
+          children(i).elements(name) := ShiftRegister(io.children(i).elements(name), Constants.TOP_REGS)
         }
       } else {
-        if (name == "outputMemBlockReady") {
-          io.children(i).elements(name) := children(i).elements(name)
-        } else if (chiselTypeOf(data).getClass == chiselTypeOf(io.children(0).inputMemBlockValid).getClass) { // Bool
+        if (chiselTypeOf(data).getClass == chiselTypeOf(io.children(0).inputMemBlockValid).getClass) { // Bool
           io.children(i).elements(name) := ShiftRegister(children(i).elements(name), Constants.TOP_REGS, false.B,
             true.B)
         } else {
@@ -458,7 +449,6 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
     children(i).firstCoreId := curCore.U
     curCore += coresForArb(i)
   }
-  io.external.finished := RegNext(children.map(_.finished).foldLeft(true.B)(_ && _), false.B)
 
   io.external.inputMemAddrLen := (lineBits / axiBusWidth - 1).U
   io.external.outputMemAddrLen := (lineBits / axiBusWidth - 1).U
@@ -534,6 +524,50 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
   val outputAddrId = RegInit(0.U(16.W))
   val outputDataPtr = RegInit(0.U(math.max(1, log2Ceil(numChildren)).W))
   val outputDataCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
+  val outputTransferCounter = RegInit(0.U(log2Ceil(lineBits / axiBusWidth).W))
+  val outputBuffer = Reg(Vec(Constants.OUTPUT_BUFFER_SIZE * (lineBits / axiBusWidth), UInt(axiBusWidth.W)))
+  val outputStrbBuffer = Reg(Vec(outputBuffer.length, UInt((axiBusWidth / 8).W)))
+  val outputBufferValid = RegInit(VecInit(Seq.fill(outputBuffer.length)(false.B)))
+  val outputBufferSize = RegInit(0.U(log2Ceil(outputBuffer.length + 1).W))
+  val outputReserved = RegInit(VecInit(Seq.fill(numChildren)(false.B)))
+  val outputWaitCounters = RegInit(VecInit(Seq.fill(numChildren)(0.U(
+    math.max(1, log2Ceil(2 * Constants.TOP_REGS + lineBits / axiBusWidth)).W))))
+  val nextOutputBufferValid = WireInit(false.B)
+  val nextOutputBuffer = WireInit(0.U(axiBusWidth.W))
+  val nextOutputStrbBuffer = WireInit(0.U((axiBusWidth / 8).W))
+  val tailOutputConsumed = WireInit(false.B)
+  val reservationAdded = WireInit(false.B)
+
+  var shiftSignal = tailOutputConsumed
+  var firstHalfEmpty = true.B // TODO this logic is specific to output buffer size of 2
+  for (i <- 0 until outputBuffer.length / 2) {
+    firstHalfEmpty = firstHalfEmpty && !outputBufferValid(i)
+  }
+  for (i <- outputBuffer.length - 1 to 0 by -1) {
+    shiftSignal = shiftSignal || !outputBufferValid(i)
+    when (shiftSignal) {
+      if (i == 0) {
+        outputBuffer(i) := nextOutputBuffer
+        outputStrbBuffer(i) := nextOutputStrbBuffer
+        outputBufferValid(i) := Mux(firstHalfEmpty, false.B, nextOutputBufferValid)
+      } else if (i == outputBuffer.length / 2) {
+        outputBuffer(i) := Mux(firstHalfEmpty, nextOutputBuffer, outputBuffer(i - 1))
+        outputStrbBuffer(i) := Mux(firstHalfEmpty, nextOutputStrbBuffer, outputStrbBuffer(i - 1))
+        outputBufferValid(i) := Mux(firstHalfEmpty, nextOutputBufferValid, outputBufferValid(i - 1))
+      } else {
+        outputBuffer(i) := outputBuffer(i - 1)
+        outputStrbBuffer(i) := outputStrbBuffer(i - 1)
+        outputBufferValid(i) := outputBufferValid(i - 1)
+      }
+    }
+  }
+  when (tailOutputConsumed && reservationAdded) {
+    outputBufferSize := outputBufferSize + (lineBits / axiBusWidth - 1).U
+  } .elsewhen (reservationAdded) {
+    outputBufferSize := outputBufferSize + (lineBits / axiBusWidth).U
+  } .elsewhen (tailOutputConsumed) {
+    outputBufferSize := outputBufferSize - 1.U
+  }
 
   io.external.outputMemAddr := children(outputAddrPtr).outputMemAddr
   io.external.outputMemAddrValid := children(outputAddrPtr).outputMemAddrValid && !outputReqInFlight(outputAddrPtr)
@@ -552,31 +586,62 @@ class TopArbiter(axiBusWidth: Int, lineBits: Int, numChildren: Int, coresForArb:
     outputAddrId := outputAddrId + 1.U
   }
 
-  io.external.outputMemBlockValid := outputReqInFlight(outputDataPtr)
-  io.external.outputMemBlock := children(outputDataPtr).outputMemBlock
-  io.external.outputMemStrb := children(outputDataPtr).outputMemStrb
-  io.external.outputMemBlockLast := outputDataCounter === (lineBits / axiBusWidth - 1).U
+  io.external.outputMemBlockValid := outputBufferValid(outputBuffer.length - 1)
+  io.external.outputMemBlock := outputBuffer(outputBuffer.length - 1)
+  io.external.outputMemStrb := outputStrbBuffer(outputBuffer.length - 1)
+  io.external.outputMemBlockLast := outputTransferCounter === (lineBits / axiBusWidth - 1).U
+  when (io.external.outputMemBlockValid && io.external.outputMemBlockReady) {
+    tailOutputConsumed := true.B
+    when (outputTransferCounter === (lineBits / axiBusWidth - 1).U) {
+      outputTransferCounter := 0.U
+    } .otherwise {
+      outputTransferCounter := outputTransferCounter + 1.U
+    }
+  }
   for (i <- 0 until numChildren) {
-    children(i).outputMemBlockReady := !children(i).outputMemAddrValid || (io.external.outputMemBlockValid &&
-      io.external.outputMemBlockReady && outputDataPtr === i.U)
+    children(i).outputMemBlockReady := outputReqInFlight(outputDataPtr) &&
+      (outputReserved(outputDataPtr) || reservationAdded) && outputDataPtr === i.U
+  }
+  when (outputReqInFlight(outputDataPtr) && !outputReserved(outputDataPtr) &&
+    outputBufferSize < (outputBuffer.length - lineBits / axiBusWidth).U) {
+    if (2 * Constants.TOP_REGS + lineBits / axiBusWidth > 1) { // otherwise conflicts with the setting to false below
+      outputReserved(outputDataPtr) := true.B
+    }
+    reservationAdded := true.B
   }
 
-  when (!outputReqInFlight(outputDataPtr) || (io.external.outputMemBlockValid && io.external.outputMemBlockReady &&
-    outputDataCounter === (lineBits / axiBusWidth - 1).U)) {
+  when (!outputReqInFlight(outputDataPtr) || outputDataCounter === (lineBits / axiBusWidth - 1).U) {
     when (outputDataPtr === (numChildren - 1).U) {
       outputDataPtr := 0.U
     } .otherwise {
       outputDataPtr := outputDataPtr + 1.U
     }
   }
-  when (io.external.outputMemBlockValid && io.external.outputMemBlockReady) {
+  when (outputReqInFlight(outputDataPtr) && (reservationAdded || outputReserved(outputDataPtr))) {
     when (outputDataCounter === (lineBits / axiBusWidth - 1).U) {
       outputDataCounter := 0.U
-      outputReqInFlight(outputDataPtr) := false.B
     } .otherwise {
       outputDataCounter := outputDataCounter + 1.U
     }
   }
+  for (i <- 0 until numChildren) {
+    when ((outputDataPtr === i.U && reservationAdded) || outputReserved(i)) {
+      when (outputWaitCounters(i) === (2 * Constants.TOP_REGS + lineBits / axiBusWidth - 1).U) {
+        outputWaitCounters(i) := 0.U
+        outputReserved(i) := false.B
+        outputReqInFlight(i) := false.B
+      } .otherwise {
+        outputWaitCounters(i) := outputWaitCounters(i) + 1.U
+      }
+      when (outputWaitCounters(i) >= (2 * Constants.TOP_REGS).U) {
+        nextOutputBufferValid := true.B
+        nextOutputBuffer := children(i).outputMemBlock
+        nextOutputStrbBuffer := children(i).outputMemStrb
+      }
+    }
+  }
+  io.external.finished := RegNext(children.map(_.finished).foldLeft(true.B)(_ && _) &&
+    outputBufferSize === 0.U, false.B)
 }
 
 class Core(lineBits: Int, transferSize: Int, addrWidth: Int, puFactory: () => AddrProcessingUnitIO) extends Module {
